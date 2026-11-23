@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+"""Generate KsignNext.xcodeproj/project.pbxproj from the source tree.
+
+Scans the KsignNext folder layout (App, Core, Domain, Data, Engines,
+Modules, Resources, SupportingFiles, Tests) and emits a valid pbxproj
+with one app target (KsignNext), one unit-test target (KsignNextTests)
+and one UI-test target (KsignNextUITests), plus SPM dependencies.
+
+SPM packages (pinned as upToNextMajor — resolved by Xcode on macOS):
+  ZIPFoundation  https://github.com/weichsel/ZIPFoundation  (MIT)
+  SWCompression  https://github.com/tsolomko/SWCompression  (MIT)
+  swift-nio      https://github.com/apple/swift-nio          (Apache-2.0)
+  swift-crypto   https://github.com/apple/swift-crypto       (Apache-2.0)
+
+Usage: python3 Scripts/generate_project.py   (run from the repo root)
+Requires: Python 3 only. No Xcode needed to generate the file.
+"""
+import hashlib
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_NAME = "KsignNext"
+BUNDLE_ID = "com.ksignnext.app"
+
+# (repo url, minimum version, product name, package name)
+SPM = [
+    ("https://github.com/weichsel/ZIPFoundation", "0.9.0", "ZIPFoundation", "ZIPFoundation"),
+    ("https://github.com/tsolomko/SWCompression", "4.8.0", "SWCompression", "SWCompression"),
+    ("https://github.com/apple/swift-nio", "2.0.0", "NIO", "swift-nio"),
+    ("https://github.com/apple/swift-nio", "2.0.0", "NIOHTTP1", "swift-nio"),
+    ("https://github.com/apple/swift-nio", "2.0.0", "NIOSSL", "swift-nio-ssl"),
+    ("https://github.com/apple/swift-crypto", "3.0.0", "Crypto", "swift-crypto"),
+]
+
+# source dirs -> target
+APP_DIRS = ["App", "Core", "Domain", "Data", "Engines", "Modules"]
+RESOURCE_EXTS = {".xcassets", ".storyboard", ".strings", ".xcprivacy",
+                 ".xcdatamodeld", ".plist"}
+
+
+def stable_id(text):
+    """Deterministic 24-char hex id, as Xcode expects."""
+    return hashlib.sha256(text.encode()).hexdigest()[:24].upper()
+
+
+def collect():
+    app_sources, app_resources, test_sources, uitest_sources, app_headers = [], [], [], [], []
+    for d in APP_DIRS:
+        base = os.path.join(ROOT, d)
+        for dirpath, _dirs, files in os.walk(base):
+            for f in sorted(files):
+                rel = os.path.relpath(os.path.join(dirpath, f), ROOT)
+                if f.endswith(".swift"):
+                    app_sources.append(rel)
+                elif f.endswith(".h"):
+                    app_headers.append(rel)
+                elif any(rel.endswith(e) for e in RESOURCE_EXTS):
+                    app_resources.append(rel)
+    for d, out in (("Resources", app_resources), ("SupportingFiles", app_resources)):
+        base = os.path.join(ROOT, d)
+        for dirpath, _dirs, files in os.walk(base):
+            for f in sorted(files):
+                rel = os.path.relpath(os.path.join(dirpath, f), ROOT)
+                if rel.endswith(".swift"):
+                    app_sources.append(rel)
+                elif rel.endswith(".h"):
+                    app_headers.append(rel)
+                elif os.path.basename(rel) in ("Info.plist",) or rel.endswith(".entitlements"):
+                    # Referenced by build settings (INFOPLIST_FILE /
+                    # CODE_SIGN_ENTITLEMENTS); must NOT be a build-phase file.
+                    app_headers.append(rel)
+                else:
+                    out.append(rel)
+    for dirpath, _dirs, files in os.walk(os.path.join(ROOT, "Tests")):
+        for f in sorted(files):
+            if not f.endswith(".swift"):
+                continue
+            rel = os.path.relpath(os.path.join(dirpath, f), ROOT)
+            (uitest_sources if "UITests" in rel else test_sources).append(rel)
+    return (sorted(set(app_sources)), sorted(set(app_resources)),
+            sorted(test_sources), sorted(uitest_sources),
+            sorted(set(app_headers)))
+
+
+def esc(s):
+    return s.replace('"', '\\"')
+
+
+def main():
+    app_src, app_res, test_src, ui_src, app_headers = collect()
+    print(f"app sources: {len(app_src)}, resources: {len(app_res)}, "
+          f"unit tests: {len(test_src)}, UI tests: {len(ui_src)}, "
+          f"headers/other refs: {len(app_headers)}")
+    if not app_src:
+        print("ERROR: no Swift sources found — builders have not delivered yet.")
+        sys.exit(1)
+
+    out = []
+    a = out.append
+    a("// !$*UTF8*$!")
+    a("{")
+    a("\tarchiveVersion = 1;")
+    a("\tclasses = {};")
+    a("\tobjectVersion = 56;")
+    a("\tobjects = {")
+
+    build_files, file_refs = [], []
+
+    def add_file(rel, last_type=None):
+        fid = stable_id("fileref:" + rel)
+        bid = stable_id("buildfile:" + rel)
+        name = os.path.basename(rel)
+        if last_type is None:
+            if rel.endswith(".swift"):
+                last_type = "sourcecode.swift"
+            elif rel.endswith(".xcassets"):
+                last_type = "folder.assetcatalog"
+            elif rel.endswith(".storyboard"):
+                last_type = "file.storyboard"
+            elif rel.endswith(".strings"):
+                last_type = "text.plist.strings"
+            elif rel.endswith(".xcdatamodeld"):
+                last_type = "wrapper.xcdatamodel"
+            elif rel.endswith(".xcprivacy"):
+                last_type = "text.xml"
+            elif rel.endswith(".h"):
+                last_type = "sourcecode.c.h"
+            elif rel.endswith(".entitlements"):
+                last_type = "text.plist.entitlements"
+            else:
+                last_type = "text.plist.xml"
+        file_refs.append(
+            f'\t\t{fid} /* {esc(name)} */ = {{isa = PBXFileReference; '
+            f'lastKnownFileType = {last_type}; path = {esc(name)}; '
+            f'sourceTree = "<group>"; }};')
+        build_files.append(
+            f'\t\t{bid} /* {esc(name)} in Sources */ = {{isa = PBXBuildFile; '
+            f'fileRef = {fid} /* {esc(name)} */; }};')
+        return fid, bid
+
+    src_build, res_build = [], []
+    for rel in app_src:
+        _f, b = add_file(rel)
+        src_build.append(b)
+    for rel in app_headers:
+        add_file(rel)  # reference only: no build phase
+    for rel in app_res:
+        _f, b = add_file(rel)
+        res_build.append(b)
+    test_build, ui_build = [], []
+    for rel in test_src:
+        _f, b = add_file(rel)
+        test_build.append(b)
+    for rel in ui_src:
+        _f, b = add_file(rel)
+        ui_build.append(b)
+
+    # SPM package references (one per repo url)
+    pkg_refs, pkg_products = [], []
+    seen_urls = {}
+    for url, _ver, product, _pkg in SPM:
+        if url in seen_urls:
+            continue
+        pid = stable_id("pkg:" + url)
+        seen_urls[url] = pid
+        pkg_refs.append(
+            f'\t\t{pid} /* XCRemoteSwiftPackageReference "{esc(url)}" */ = '
+            f'{{isa = XCRemoteSwiftPackageReference; repositoryURL = "{esc(url)}"; '
+            f'requirement = {{kind = upToNextMajorVersion; minimumVersion = '
+            f'{[v for u, v, _p, _n in SPM if u == url][0]}; }}; }};')
+    for url, _ver, product, _pkg in SPM:
+        pid = seen_urls[url]
+        did = stable_id("pkgdep:" + product)
+        pkg_products.append(
+            f'\t\t{did} /* {esc(product)} */ = {{isa = XCSwiftPackageProductDependency; '
+            f'package = {pid} /* XCRemoteSwiftPackageReference "{esc(url)}" */; '
+            f'productName = {esc(product)}; }};')
+
+    # Groups (flat per top dir, plus nested path via children by dir)
+    def group_id(path):
+        return stable_id("group:" + path)
+
+    groups = []
+    all_files = app_src + app_res + test_src + ui_src + app_headers
+    dirs = sorted({os.path.dirname(r) for r in all_files})
+    for d in dirs:
+        kids = []
+        for r in all_files:
+            if os.path.dirname(r) == d:
+                kids.append(stable_id("fileref:" + r))
+        for sub in sorted({x for x in dirs if os.path.dirname(x) == d}):
+            kids.append(group_id(sub))
+        groups.append(
+            f'\t\t{group_id(d)} /* {esc(os.path.basename(d) or d)} */ = '
+            f'{{isa = PBXGroup; children = ({", ".join(k + " /* */" for k in kids)}); '
+            f'path = {esc(os.path.basename(d))}; sourceTree = "<group>"; }};')
+    # Fix: children entries above carry a bogus trailing comment; rebuild cleanly
+    groups = []
+    for d in dirs:
+        kids = []
+        for r in all_files:
+            if os.path.dirname(r) == d:
+                kids.append(stable_id("fileref:" + r))
+        for sub in sorted({x for x in dirs if os.path.dirname(x) == d}):
+            kids.append(group_id(sub))
+        kids_s = ", ".join(kids)
+        groups.append(
+            f'\t\t{group_id(d)} /* {esc(os.path.basename(d) or d)} */ = '
+            f'{{isa = PBXGroup; children = ({kids_s}); '
+            f'path = {esc(os.path.basename(d))}; sourceTree = "<group>"; }};')
+    top_kids = ", ".join(group_id(d) for d in sorted(
+        {r.split("/")[0] for r in all_files}))
+    groups.append(
+        f'\t\t{group_id("")} = {{isa = PBXGroup; children = ({top_kids}); '
+        f'sourceTree = "<group>"; }};')
+    # Products group
+    prod_app = stable_id("product:app")
+    prod_test = stable_id("product:test")
+    prod_ui = stable_id("product:ui")
+    groups.append(
+        f'\t\t{stable_id("group:Products")} = {{isa = PBXGroup; children = '
+        f'({prod_app}, {prod_test}, {prod_ui}); name = Products; '
+        f'sourceTree = "<group>"; }};')
+
+    for line in build_files + file_refs + pkg_refs + pkg_products + groups:
+        a(line)
+
+    # File refs for products
+    for pid, name, ftype in (
+            (prod_app, "KsignNext.app", "wrapper.application"),
+            (prod_test, "KsignNextTests.xctest", "wrapper.cfbundle"),
+            (prod_ui, "KsignNextUITests.xctest", "wrapper.cfbundle")):
+        a(f'\t\t{pid} /* {name} */ = {{isa = PBXFileReference; '
+          f'explicitFileType = {ftype}; includeInIndex = 0; '
+          f'path = {name}; sourceTree = BUILT_PRODUCTS_DIR; }};')
+
+    # Build phases
+    def phase(pid, name, isa, files, extra=""):
+        files_s = ", ".join(files)
+        a(f'\t\t{pid} /* {name} */ = {{isa = {isa}; buildActionMask = 2147483647; '
+          f'files = ({files_s}); runOnlyForDeploymentPostprocessing = 0;{extra} }};')
+
+    app_src_phase = stable_id("phase:app:src")
+    app_fw_phase = stable_id("phase:app:fw")
+    app_res_phase = stable_id("phase:app:res")
+    test_src_phase = stable_id("phase:test:src")
+    test_fw_phase = stable_id("phase:test:fw")
+    ui_src_phase = stable_id("phase:ui:src")
+    ui_fw_phase = stable_id("phase:ui:fw")
+    phase(app_src_phase, "Sources", "PBXSourcesBuildPhase", src_build)
+    phase(app_res_phase, "Resources", "PBXResourcesBuildPhase", res_build)
+    phase(test_src_phase, "Sources", "PBXSourcesBuildPhase", test_build)
+    phase(ui_src_phase, "Sources", "PBXSourcesBuildPhase", ui_build)
+    # Frameworks phases link SPM products into the app target
+    fw_files = []
+    for url, _ver, product, _pkg in SPM:
+        did = stable_id("pkgdep:" + product)
+        fid = stable_id("fwfile:" + product)
+        fw_files.append(fid)
+        a(f'\t\t{fid} /* {esc(product)} in Frameworks */ = {{isa = PBXBuildFile; '
+          f'fileRef = {did} /* {esc(product)} */; }};')
+    phase(app_fw_phase, "Frameworks", "PBXFrameworksBuildPhase", fw_files)
+    phase(test_fw_phase, "Frameworks", "PBXFrameworksBuildPhase", [])
+    phase(ui_fw_phase, "Frameworks", "PBXFrameworksBuildPhase", [])
+
+    # Targets
+    def target(tid, name, product, ptype, phases, deps=()):
+        ph = ", ".join(phases)
+        dp = ", ".join(deps)
+        a(f'\t\t{tid} /* {name} */ = {{isa = PBXNativeTarget; '
+          f'buildConfigurationList = {stable_id("cfglist:" + name)} /* Build configuration list for PBXNativeTarget "{name}" */; '
+          f'buildPhases = ({ph}); buildRules = (); dependencies = ({dp}); '
+          f'name = {name}; productName = {name}; productReference = '
+          f'{stable_id("product:" + ("app" if name == "KsignNext" else "test" if name == "KsignNextTests" else "ui"))} /* {product} */; '
+          f'productType = "{ptype}"; }};')
+
+    app_target = stable_id("target:app")
+    test_target = stable_id("target:test")
+    ui_target = stable_id("target:ui")
+    target(app_target, "KsignNext", "KsignNext.app",
+           "com.apple.product-type.application",
+           [app_src_phase, app_fw_phase, app_res_phase])
+    target(test_target, "KsignNextTests", "KsignNextTests.xctest",
+           "com.apple.product-type.bundle.unit-test",
+           [test_src_phase, test_fw_phase])
+    target(ui_target, "KsignNextUITests", "KsignNextUITests.xctest",
+           "com.apple.product-type.bundle.ui-testing",
+           [ui_src_phase, ui_fw_phase])
+
+    # Project
+    proj_id = stable_id("project")
+    a(f'\t\t{proj_id} /* Project object */ = {{isa = PBXProject; '
+      f'attributes = {{BuildIndependentTargetsInParallel = 1; '
+      f'LastUpgradeCheck = 1700; TargetAttributes = {{'
+      f'{app_target} = {{CreatedOnToolsVersion = 17.0; }}; '
+      f'{test_target} = {{CreatedOnToolsVersion = 17.0; TestTargetID = {app_target}; }}; '
+      f'{ui_target} = {{CreatedOnToolsVersion = 17.0; TestTargetID = {app_target}; }}; }}; }}; '
+      f'buildConfigurationList = {stable_id("cfglist:project")} /* Build configuration list for PBXProject "KsignNext" */; '
+      f'compatibilityVersion = "Xcode 14.0"; developmentRegion = en; '
+      f'hasScannedForEncodings = 0; knownRegions = (en, ar); '
+      f'mainGroup = {group_id("")}; '
+      f'packageReferences = ({", ".join(seen_urls.values())}); '
+      f'productRefGroup = {stable_id("group:Products")} /* Products */; '
+      f'projectDirPath = ""; projectRoot = ""; '
+      f'targets = ({app_target}, {test_target}, {ui_target}); }};')
+
+    # Build configurations
+    def config(cid, name, settings):
+        items = ";\n".join(f"\t\t\t\t{k} = {v}" for k, v in settings.items())
+        a(f'\t\t{cid} /* {name} */ = {{isa = XCBuildConfiguration; '
+          f'buildSettings = {{\n{items};\n\t\t\t}}; name = {name}; }};')
+
+    common_app = {
+        "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
+        "ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME": "AccentColor",
+        "CODE_SIGN_ENTITLEMENTS": "SupportingFiles/KsignNext.entitlements",
+        "CODE_SIGN_STYLE": "Automatic",
+        "CURRENT_PROJECT_VERSION": "1",
+        "DEVELOPMENT_TEAM": "",
+        "GENERATE_INFOPLIST_FILE": "NO",
+        "INFOPLIST_FILE": "SupportingFiles/Info.plist",
+        "IPHONEOS_DEPLOYMENT_TARGET": "16.0",
+        "LD_RUNPATH_SEARCH_PATHS": '"$(inherited) @executable_path/Frameworks"',
+        "MARKETING_VERSION": "1.0",
+        "PRODUCT_BUNDLE_IDENTIFIER": BUNDLE_ID,
+        "PRODUCT_NAME": '"$(TARGET_NAME)"',
+        "SWIFT_OBJC_BRIDGING_HEADER": "Engines/SigningEngine/ZsignBridge.h",
+        "SWIFT_VERSION": "5.0",
+        "SWIFT_STRICT_CONCURRENCY": "complete",
+        "TARGETED_DEVICE_FAMILY": '"1,2"',
+    }
+    for cfg, extra in (("Debug", {"CODE_SIGN_IDENTITY": '"Apple Development"',
+                                  "DEBUG_INFORMATION_FORMAT": "dwarf",
+                                  "SWIFT_OPTIMIZATION_LEVEL": '"-Onone"'}),
+                       ("Release", {"CODE_SIGN_IDENTITY": '"Apple Distribution"',
+                                    "COPY_PHASE_STRIP": "NO",
+                                    "DEBUG_INFORMATION_FORMAT": '"dwarf-with-dsym"',
+                                    "SWIFT_OPTIMIZATION_LEVEL": '"-O"'})):
+        s = dict(common_app)
+        s.update(extra)
+        config(stable_id(f"cfg:app:{cfg}"), cfg, s)
+    for cfg in ("Debug", "Release"):
+        config(stable_id(f"cfg:test:{cfg}"), cfg, {
+            "BUNDLE_LOADER": '"$(TEST_HOST)"',
+            "CODE_SIGN_STYLE": "Automatic",
+            "INFOPLIST_FILE": "Tests/Info.plist",
+            "IPHONEOS_DEPLOYMENT_TARGET": "16.0",
+            "LD_RUNPATH_SEARCH_PATHS": '"$(inherited) @executable_path/Frameworks @loader_path/Frameworks"',
+            "PRODUCT_BUNDLE_IDENTIFIER": BUNDLE_ID + ".tests",
+            "PRODUCT_NAME": '"$(TARGET_NAME)"',
+            "SWIFT_VERSION": "5.0",
+            "TARGETED_DEVICE_FAMILY": '"1,2"',
+            "TEST_HOST": '"$(BUILT_PRODUCTS_DIR)/KsignNext.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/KsignNext"',
+        })
+        config(stable_id(f"cfg:ui:{cfg}"), cfg, {
+            "CODE_SIGN_STYLE": "Automatic",
+            "INFOPLIST_FILE": "Tests/Info.plist",
+            "IPHONEOS_DEPLOYMENT_TARGET": "16.0",
+            "PRODUCT_BUNDLE_IDENTIFIER": BUNDLE_ID + ".uitests",
+            "PRODUCT_NAME": '"$(TARGET_NAME)"',
+            "SWIFT_VERSION": "5.0",
+            "TARGETED_DEVICE_FAMILY": '"1,2"',
+            "TEST_TARGET_NAME": "KsignNext",
+        })
+        config(stable_id(f"cfg:proj:{cfg}"), cfg, {
+            "ALWAYS_SEARCH_USER_PATHS": "NO",
+            "CLANG_ANALYZER_NONNULL": "YES",
+            "CLANG_CXX_LANGUAGE_STANDARD": '"gnu++20"',
+            "CLANG_ENABLE_MODULES": "YES",
+            "CURRENT_PROJECT_VERSION": "1",
+            "DEBUG_INFORMATION_FORMAT": "dwarf" if cfg == "Debug" else '"dwarf-with-dsym"',
+            "GCC_C_LANGUAGE_STANDARD": "gnu11",
+            "MARKETING_VERSION": "1.0",
+            "SWIFT_VERSION": "5.0",
+        })
+
+    def cfglist(lid, name, cfgs):
+        items = ", ".join(f"{stable_id(c)} /* {n} */" for c, n in cfgs)
+        a(f'\t\t{lid} /* Build configuration list for PBXNativeTarget "{name}" */ = '
+          f'{{isa = XCConfigurationList; buildConfigurations = ({items}); '
+          f'defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; }};')
+
+    cfglist(stable_id("cfglist:KsignNext"), "KsignNext",
+            [(f"cfg:app:{c}", c) for c in ("Debug", "Release")])
+    cfglist(stable_id("cfglist:KsignNextTests"), "KsignNextTests",
+            [(f"cfg:test:{c}", c) for c in ("Debug", "Release")])
+    cfglist(stable_id("cfglist:KsignNextUITests"), "KsignNextUITests",
+            [(f"cfg:ui:{c}", c) for c in ("Debug", "Release")])
+    cfglist(stable_id("cfglist:project"), "KsignNext",
+            [(f"cfg:proj:{c}", c) for c in ("Debug", "Release")])
+
+    a("\t};")
+    a(f'\trootObject = {proj_id} /* Project object */;')
+    a("}")
+
+    outdir = os.path.join(ROOT, "KsignNext.xcodeproj")
+    os.makedirs(outdir, exist_ok=True)
+    with open(os.path.join(outdir, "project.pbxproj"), "w") as f:
+        f.write("\n".join(out) + "\n")
+    print("Wrote KsignNext.xcodeproj/project.pbxproj")
+
+
+if __name__ == "__main__":
+    main()
