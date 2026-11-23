@@ -255,29 +255,43 @@ def main():
         did = stable_id("pkgdep:" + product)
         fid = stable_id("fwfile:" + product)
         fw_files.append(fid)
+        # Real Xcode projects link SPM products with `productRef`, NOT
+        # `fileRef`: the target is an XCSwiftPackageProductDependency,
+        # which is not a PBXReference, so Xcode 26.2 rejects the project
+        # with "PBXBuildFile ... whose fileReference is not a
+        # PBXReference" (verified live in CI run 9, 2026-11-23).
         a(f'\t\t{fid} /* {esc(product)} in Frameworks */ = {{isa = PBXBuildFile; '
-          f'fileRef = {did} /* {esc(product)} */; }};')
+          f'productRef = {did} /* {esc(product)} */; }};')
     phase(app_fw_phase, "Frameworks", "PBXFrameworksBuildPhase", fw_files)
     phase(test_fw_phase, "Frameworks", "PBXFrameworksBuildPhase", [])
     phase(ui_fw_phase, "Frameworks", "PBXFrameworksBuildPhase", [])
 
     # Targets
-    def target(tid, name, product, ptype, phases, deps=()):
+    def target(tid, name, product, ptype, phases, deps=(), pkg_deps=()):
         ph = ", ".join(phases)
         dp = ", ".join(deps)
+        # Real Xcode projects list the linked SPM products on the target
+        # itself (packageProductDependencies). Without it, and with the
+        # productRef fix above, Xcode still cannot resolve the products.
+        pd = ", ".join(pkg_deps)
+        pkg_attr = (f'packageProductDependencies = ({pd}); '
+                    if pkg_deps else "")
         a(f'\t\t{tid} /* {name} */ = {{isa = PBXNativeTarget; '
           f'buildConfigurationList = {stable_id("cfglist:" + name)} /* Build configuration list for PBXNativeTarget "{name}" */; '
           f'buildPhases = ({ph}); buildRules = (); dependencies = ({dp}); '
-          f'name = {name}; productName = {name}; productReference = '
+          f'name = {name}; {pkg_attr}productName = {name}; productReference = '
           f'{stable_id("product:" + ("app" if name == "KsignNext" else "test" if name == "KsignNextTests" else "ui"))} /* {product} */; '
           f'productType = "{ptype}"; }};')
 
     app_target = stable_id("target:app")
     test_target = stable_id("target:test")
     ui_target = stable_id("target:ui")
+    app_pkg_deps = [stable_id("pkgdep:" + product)
+                    for _url, _ver, product, _pkg in SPM]
     target(app_target, "KsignNext", "KsignNext.app",
            "com.apple.product-type.application",
-           [app_src_phase, app_fw_phase, app_res_phase])
+           [app_src_phase, app_fw_phase, app_res_phase],
+           pkg_deps=app_pkg_deps)
     target(test_target, "KsignNextTests", "KsignNextTests.xctest",
            "com.apple.product-type.bundle.unit-test",
            [test_src_phase, test_fw_phase])
