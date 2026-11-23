@@ -461,10 +461,9 @@ public enum MachOParser {
         guard ncmds <= 512 else {
             throw IPAError.invalidMachO("Implausible load-command count \(ncmds).")
         }
-        guard sizeofcmds <= UInt32(data.count) else {
-            if !allowTruncatedHeader {
-                throw IPAError.invalidMachO("Load commands size \(sizeofcmds) exceeds file size.")
-            }
+        // A truncated header is only tolerated when the caller allows it.
+        guard sizeofcmds <= UInt32(data.count) || allowTruncatedHeader else {
+            throw IPAError.invalidMachO("Load commands size \(sizeofcmds) exceeds file size.")
         }
 
         var file = MachOFile(

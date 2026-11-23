@@ -116,11 +116,14 @@ public enum ZipCompression {
         var output = Data()
         output.reserveCapacity(min(expectedSize, 16 * 1024 * 1024))
         // The SDK's memberwise init takes non-optional pointers, so the
-        // stream starts pointed at a dummy byte with zero sizes; the real
+        // stream starts pointed at dummy bytes with zero sizes; the real
         // pointers are assigned before every `compression_stream_process`
         // call below, and `compression_stream_init` never dereferences them.
-        var dummyByte: UInt8 = 0
-        var stream = compression_stream(dst_ptr: &dummyByte, dst_size: 0, src_ptr: &dummyByte, src_size: 0, state: nil)
+        // (Two distinct dummies: passing one variable twice would be an
+        // overlapping exclusive access.)
+        var dummyDst: UInt8 = 0
+        var dummySrc: UInt8 = 0
+        var stream = compression_stream(dst_ptr: &dummyDst, dst_size: 0, src_ptr: &dummySrc, src_size: 0, state: nil)
         guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else {
             throw IPAError.corruptZIP("Failed to initialise deflate decoder.")
         }
@@ -156,7 +159,10 @@ public enum ZipCompression {
                         if output.count + produced > expectedSize {
                             throw IPAError.corruptZIP("Deflated entry expands beyond its declared size.")
                         }
-                        output.append(contentsOf: outBuffer[0..<produced])
+                        // Read through the output pointer, not `outBuffer`:
+                        // the array is under an exclusive mutable access
+                        // for the whole `withUnsafeMutableBytes` closure.
+                        output.append(contentsOf: UnsafeBufferPointer(start: outputBase, count: produced))
                     }
                     if status == COMPRESSION_STATUS_ERROR {
                         throw IPAError.corruptZIP("Deflate stream is corrupt.")
