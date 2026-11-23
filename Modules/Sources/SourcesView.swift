@@ -144,7 +144,11 @@ struct SourcesView: View {
             .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: Binding(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil } })) {
                 Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
             } message: { Text(viewModel.errorMessage ?? "") }
-            .navigationDestination(item: $selectedSource) { source in SourceDetailView(source: source) }
+            // `navigationDestination(item:)` needs iOS 17; the `isPresented`
+            // variant works from iOS 16.
+            .navigationDestination(isPresented: Binding(get: { selectedSource != nil }, set: { if !$0 { selectedSource = nil } })) {
+                if let source = selectedSource { SourceDetailView(source: source) }
+            }
         }
     }
 }

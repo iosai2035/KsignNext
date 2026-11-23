@@ -93,14 +93,14 @@ struct CertificatesView: View {
             }
             .fileImporter(isPresented: $viewModel.showP12Importer, allowedContentTypes: [.init(filenameExtension: "p12") ?? .data]) { result in
                 switch result {
-                case .success(let urls):
-                    if let url = urls.first { viewModel.pendingP12URL = url; showPasswordSheet = true }
+                case .success(let url):
+                    viewModel.pendingP12URL = url; showPasswordSheet = true
                 case .failure(let error): viewModel.errorMessage = error.localizedDescription
                 }
             }
             .fileImporter(isPresented: $viewModel.showProvisionImporter, allowedContentTypes: [.init(filenameExtension: "mobileprovision") ?? .data]) { result in
                 switch result {
-                case .success(let urls): urls.first.map { viewModel.importFile($0) }
+                case .success(let url): viewModel.importFile(url)
                 case .failure(let error): viewModel.errorMessage = error.localizedDescription
                 }
             }
@@ -116,7 +116,11 @@ struct CertificatesView: View {
             .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: Binding(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil } })) {
                 Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
             } message: { Text(viewModel.errorMessage ?? "") }
-            .navigationDestination(item: $selectedCert) { cert in CertificateDetailView(certificate: cert, onDeleted: { viewModel.refresh() }) }
+            // `navigationDestination(item:)` needs iOS 17; the `isPresented`
+            // variant works from iOS 16.
+            .navigationDestination(isPresented: Binding(get: { selectedCert != nil }, set: { if !$0 { selectedCert = nil } })) {
+                if let cert = selectedCert { CertificateDetailView(certificate: cert, onDeleted: { viewModel.refresh() }) }
+            }
         }
     }
 
