@@ -48,6 +48,7 @@ jobs:
 
       - name: Run unit + integration + security tests
         run: |
+          mkdir -p build
           xcodebuild test \
             -project KsignNext.xcodeproj \
             -scheme KsignNext \
