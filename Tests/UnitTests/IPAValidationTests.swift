@@ -6,6 +6,19 @@ import XCTest
 /// and invalid variants. No network, no reference IPA.
 final class IPAValidationTests: XCTestCase {
 
+    /// Little-endian encoders for the ZIP fixture (the helpers the original
+    /// `zipData` called were never defined, which also made the long `+`
+    /// chains time out the type checker).
+    private func u16(_ value: UInt16) -> Data {
+        var v = value.littleEndian
+        return Data(bytes: &v, count: 2)
+    }
+
+    private func u32(_ value: UInt32) -> Data {
+        var v = value.littleEndian
+        return Data(bytes: &v, count: 4)
+    }
+
     private func zipData(entries: [(name: String, data: Data)]) -> Data {
         var out = Data()
         var central: [(name: Data, crc: UInt32, size: UInt32, offset: UInt32)] = []
@@ -19,18 +32,54 @@ final class IPAValidationTests: XCTestCase {
                 for _ in 0..<8 { c = (c & 1) == 1 ? (0xEDB8_8320 ^ (c >> 1)) : (c >> 1) }
                 return c
             } ^ 0xFFFF_FFFF
-            out += u32(0x04034B50) + u16(20) + u16(0) + u16(0) + u16(0) + u16(0)
-            out += u32(crc) + u32(UInt32(entry.data.count)) + u32(UInt32(entry.data.count))
-            out += u16(UInt16(nameData.count)) + u16(0) + nameData + entry.data
+            // Local file header. One append per field: the chained `+`
+            // form timed out the type checker.
+            out += u32(0x04034B50)
+            out += u16(20)
+            out += u16(0)
+            out += u16(0)
+            out += u16(0)
+            out += u16(0)
+            out += u32(crc)
+            out += u32(UInt32(entry.data.count))
+            out += u32(UInt32(entry.data.count))
+            out += u16(UInt16(nameData.count))
+            out += u16(0)
+            out += nameData
+            out += entry.data
             central.append((nameData, crc, UInt32(entry.data.count), offset))
         }
         let centralOffset = UInt32(out.count)
         for item in central {
-            out += u32(0x02014B50) + u16(20) + u16(20) + u16(0) + u16(0) + u16(0) + u16(0)
-            out += u32(item.crc) + u32(item.size) + u32(item.size) + u16(UInt16(item.name.count)) + u16(0) + u16(0) + u16(0) + u16(0) + u32(0) + u32(item.offset) + item.name
+            // Central directory header.
+            out += u32(0x02014B50)
+            out += u16(20)
+            out += u16(20)
+            out += u16(0)
+            out += u16(0)
+            out += u16(0)
+            out += u16(0)
+            out += u32(item.crc)
+            out += u32(item.size)
+            out += u32(item.size)
+            out += u16(UInt16(item.name.count))
+            out += u16(0)
+            out += u16(0)
+            out += u16(0)
+            out += u16(0)
+            out += u32(0)
+            out += u32(item.offset)
+            out += item.name
         }
-        out += u32(0x06054B50) + u16(0) + u16(0) + u16(UInt16(central.count)) + u16(UInt16(central.count))
-        out += u32(UInt32(out.count) - centralOffset) + u32(centralOffset) + u16(0)
+        // End of central directory.
+        out += u32(0x06054B50)
+        out += u16(0)
+        out += u16(0)
+        out += u16(UInt16(central.count))
+        out += u16(UInt16(central.count))
+        out += u32(UInt32(out.count) - centralOffset)
+        out += u32(centralOffset)
+        out += u16(0)
         return out
     }
 
