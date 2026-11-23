@@ -127,6 +127,7 @@ public final class DependencyContainer {
         VerifySignatureUseCase(signingEngine: requireSigningEngine(), logs: logs)
     }
 
+    @MainActor
     public func makeAppState() -> AppState {
         AppState(configuration: configuration)
     }
@@ -134,6 +135,7 @@ public final class DependencyContainer {
     /// Kept for the AppCoordinator builder: returns the shared app
     /// state for the root view. The coordinator itself is that
     /// builder's job.
+    @MainActor
     public func makeRootViewModel() -> AppState {
         makeAppState()
     }
