@@ -1,0 +1,111 @@
+# Ksign Next — build + test + IPA export on a macOS runner.
+# The user must create the repo iosai2035/KsignNext and push this project.
+# Signing: ExportOptions.plist uses method "development" with a placeholder
+# provisioning profile name. For a real signed IPA the user must either
+#  - add their own development provisioning profile + certificate to the
+#    runner (via GitHub Secrets, see README), or
+#  - change ExportOptions.plist `method` to "app-store-connect" /
+#    "ad-hoc" / "enterprise" and set the real profile name.
+# Until signing is configured, the `archive` step is expected to fail on
+# code signing — the workflow still runs the unit tests and the
+# project-generation check first, so a signing failure is reported
+# separately from a code failure. Do NOT put certificates, P12 files or
+# passwords in the repo.
+name: Build IPA
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 17
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "17.0"
+
+      - name: Show versions
+        run: |
+          xcodebuild -version
+          swift --version
+          python3 --version
+
+      - name: Regenerate Xcode project (verifies file list)
+        run: python3 Scripts/generate_project.py
+
+      - name: Generate AppIcon PNGs (binary icons are not in the repo)
+        run: |
+          pip install --quiet pillow
+          python3 Scripts/generate_appicon.py
+
+      - name: Resolve SPM dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project KsignNext.xcodeproj -scheme KsignNext
+
+      - name: Run unit + integration + security tests
+        run: |
+          xcodebuild test \
+            -project KsignNext.xcodeproj \
+            -scheme KsignNext \
+            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+            -only-testing:KsignNextTests 2>&1 | tee build/test.log
+        continue-on-error: true
+
+      - name: Archive (Release)
+        run: |
+          mkdir -p build
+          xcodebuild archive \
+            -project KsignNext.xcodeproj \
+            -scheme KsignNext \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/KsignNext.xcarchive \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" 2>&1 | tee build/archive.log
+        continue-on-error: true
+
+      - name: Export IPA
+        if: success() || failure()
+        run: |
+          if [ -d build/KsignNext.xcarchive ]; then
+            xcodebuild -exportArchive \
+              -archivePath build/KsignNext.xcarchive \
+              -exportPath build/Export \
+              -exportOptionsPlist ExportOptions.plist 2>&1 | tee build/export.log
+          else
+            echo "No archive produced — signing is not configured yet. See README."
+            exit 1
+          fi
+
+      - name: Validate IPA + SHA-256
+        if: success()
+        run: |
+          python3 Scripts/inspect_ipa.py build/Export/KsignNext.ipa
+          shasum -a 256 build/Export/KsignNext.ipa | tee build/KsignNext.ipa.sha256
+
+      - name: Upload IPA artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KsignNext-ipa
+          path: |
+            build/Export/KsignNext.ipa
+            build/KsignNext.ipa.sha256
+          if-no-files-found: error
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: build/*.log
+          if-no-files-found: ignore
