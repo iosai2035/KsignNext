@@ -1,0 +1,19 @@
+# Ksign Next — never commit secrets, certificates or build products.
+*.ipa
+*.xcarchive
+*.mobileprovision
+*.p12
+*.pfx
+*.pem
+*.key
+*.cer
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.swiftpm/
+Package.resolved
+.DS_Store
+# Local signing overrides (user's own, never shared)
+ExportOptions.local.plist
+*.local.plist
