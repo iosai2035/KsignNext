@@ -8,14 +8,12 @@
 # in the repo.
 name: Build IPA
 
-
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
-
 
 jobs:
   build:
@@ -24,12 +22,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-
       - name: Select Xcode 17
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: "26.2"
-
 
       - name: Show versions
         run: |
@@ -37,22 +33,18 @@ jobs:
           swift --version
           python3 --version
 
-
       - name: Regenerate Xcode project (verifies file list)
         run: python3 Scripts/generate_project.py
-
 
       - name: Generate AppIcon PNGs (binary icons are not in the repo)
         run: |
           pip install --quiet pillow
           python3 Scripts/generate_appicon.py
 
-
       - name: Resolve SPM dependencies
         run: |
           xcodebuild -resolvePackageDependencies \
             -project KsignNext.xcodeproj -scheme KsignNext
-
 
       - name: Run unit + integration + security tests
         run: |
@@ -65,7 +57,6 @@ jobs:
             -only-testing:KsignNextTests \
             ONLY_ACTIVE_ARCH=YES 2>&1 | tee build/test.log
 
-
       - name: Archive (Release, unsigned for SideStore)
         run: |
           set -o pipefail
@@ -74,3 +65,41 @@ jobs:
             -project KsignNext.xcodeproj \
             -scheme KsignNext \
             -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/KsignNext.xcarchive \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/archive.log
+
+      - name: Export IPA (unsigned, for SideStore re-signing)
+        run: |
+          if [ -d build/KsignNext.xcarchive ]; then
+            mkdir -p build/Export/Payload
+            cp -R build/KsignNext.xcarchive/Products/Applications/KsignNext.app build/Export/Payload/
+            (cd build/Export && zip -r -q KsignNext.ipa Payload) 2>&1 | tee build/export.log
+          else
+            echo "No archive produced."
+            exit 1
+          fi
+
+      - name: Validate IPA + SHA-256
+        if: success()
+        run: |
+          python3 Scripts/inspect_ipa.py build/Export/KsignNext.ipa
+          shasum -a 256 build/Export/KsignNext.ipa | tee build/KsignNext.ipa.sha256
+
+      - name: Upload IPA artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KsignNext-ipa
+          path: |
+            build/Export/KsignNext.ipa
+            build/KsignNext.ipa.sha256
+          if-no-files-found: error
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: build/*.log
+          if-no-files-found: ignore
