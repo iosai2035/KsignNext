@@ -304,7 +304,13 @@ def main():
 
     # Build configurations
     def config(cid, name, settings):
-        items = ";\n".join(f"\t\t\t\t{k} = {v}" for k, v in settings.items())
+        # An empty value renders as `KEY = ;`, which is invalid old-style
+        # plist and makes Xcode report "project is damaged / parse error".
+        # Skip empty settings entirely (e.g. DEVELOPMENT_TEAM until the
+        # user supplies a real team id); the workflow sets it via
+        # DEVELOPMENT_TEAM from the APPLE_TEAM_ID secret when present.
+        items = ";\n".join(f"\t\t\t\t{k} = {v}" for k, v in settings.items()
+                            if v != "")
         a(f'\t\t{cid} /* {name} */ = {{isa = XCBuildConfiguration; '
           f'buildSettings = {{\n{items};\n\t\t\t}}; name = {name}; }};')
 
