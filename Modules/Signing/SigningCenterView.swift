@@ -36,7 +36,9 @@ struct UnavailableSigningService: SigningServiceProtocol {
 /// Bundle-ID rules shared by the wizard and the tests (reverse-DNS, no leading digit in a label).
 struct WizardBundleIDValidator {
     static func isValid(_ id: String) -> Bool {
-        let parts = id.split(separator: ".")
+        // Keep empty labels: split omits them by default, which let a
+        // leading dot (".com.example") slip through as a valid ID.
+        let parts = id.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count >= 2 else { return false }
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
         return parts.allSatisfy { part in

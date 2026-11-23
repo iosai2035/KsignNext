@@ -106,11 +106,13 @@ final class IPAValidationTests: XCTestCase {
         let data = zipData(entries: [("Info.plist", Data("x".utf8))])
         XCTAssertTrue(isZIP(data))
         // The entry name is embedded in the archive; a real validator must require Payload/.
-        XCTAssertFalse(String(data: data, encoding: .utf8)?.contains("Payload/") ?? false)
+        // Search the raw bytes: decoding the whole ZIP as UTF-8 fails on the
+        // binary header bytes, so a String search can never match.
+        XCTAssertNil(data.range(of: Data("Payload/".utf8)))
     }
 
     func testZipWithPayloadEntryContainsPayload() {
         let data = zipData(entries: [("Payload/App.app/Info.plist", Data("x".utf8))])
-        XCTAssertTrue(String(data: data, encoding: .utf8)?.contains("Payload/App.app/Info.plist") ?? false)
+        XCTAssertNotNil(data.range(of: Data("Payload/App.app/Info.plist".utf8)))
     }
 }

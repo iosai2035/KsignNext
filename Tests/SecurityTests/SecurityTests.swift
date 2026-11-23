@@ -43,7 +43,10 @@ final class SecurityTests: XCTestCase {
     }
 
     func testFakeMobileprovisionRejected() {
-        let data = Data("FAKE-PROVISION".utf8)
+        // Binary garbage: not a plist in any format. (A bare token such as
+        // "FAKE-PROVISION" parses as a valid OpenStep plist string, so it
+        // must not be used as the "not a plist" fixture.)
+        let data = Data([0x00, 0x01, 0x02, 0xFF, 0xFE, 0xDE, 0xAD])
         XCTAssertThrowsError(try PropertyListSerialization.propertyList(from: data, options: [], format: nil))
     }
 
