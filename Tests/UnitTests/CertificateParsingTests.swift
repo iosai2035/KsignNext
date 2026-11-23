@@ -1,7 +1,9 @@
 import XCTest
 @testable import KsignNext
 
-
+// The view model under test is @MainActor, so the whole test class runs
+// on the main actor and may call its init, properties and methods directly.
+@MainActor
 final class CertificateParsingTests: XCTestCase {
 
     func testWrongP12PasswordFails() {
@@ -29,7 +31,8 @@ final class CertificateParsingTests: XCTestCase {
         let data = try PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
         let decoded = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any]
         XCTAssertEqual(decoded?["Name"] as? String, "Test Profile")
-        XCTAssertEqual((decoded?["ExpirationDate"] as? Date)?.timeIntervalSince1970, expiry.timeIntervalSince1970, accuracy: 1)
+        let decodedExpiry = try XCTUnwrap(decoded?["ExpirationDate"] as? Date)
+        XCTAssertEqual(decodedExpiry.timeIntervalSince1970, expiry.timeIntervalSince1970, accuracy: 1)
     }
 
     func testExpiredProvisionDetected() {

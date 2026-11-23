@@ -1,7 +1,9 @@
 import XCTest
 @testable import KsignNext
 
-
+// The view model under test is @MainActor, so the whole test class runs
+// on the main actor and may call its init, properties and methods directly.
+@MainActor
 final class DownloadStateTests: XCTestCase {
 
     func testHTTPURLRejected() {
