@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- PLACEHOLDER signing config. The user must replace the profile name
+	     with their own development provisioning profile, and set
+	     APPLE_TEAM_ID in GitHub Secrets (or sign locally in Xcode).
+	     Method "development" produces an IPA installable via SideStore /
+	     AltStore with a free or paid Apple account. -->
+	<key>method</key>
+	<string>development</string>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>com.ksignnext.app</key>
+		<string>REPLACE_WITH_YOUR_PROVISIONING_PROFILE_NAME</string>
+	</dict>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>stripSwiftSymbols</key>
+	<true/>
+	<key>compileBitcode</key>
+	<false/>
+</dict>
+</plist>
