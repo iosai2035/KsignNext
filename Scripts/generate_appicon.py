@@ -1,48 +1,77 @@
 #!/usr/bin/env python3
 """Generate Ksign Next AppIcon PNGs (independent design: gradient + 'K').
 
-The PNGs themselves are binary and cannot travel through the text-only
-GitHub snapshot push, so they are regenerated here — locally and in CI
-before the Xcode archive step. Requires Pillow (pip install pillow).
+Pure standard library — no Pillow needed, so it runs on any CI runner.
+Writes truecolour RGBA PNGs with a vertical gradient, a rounded-corner
+mask, and a bold 'K' drawn from thick line segments.
 """
 import json
+import math
 import os
-import sys
-
-try:
-    from PIL import Image, ImageDraw, ImageFont
-except ImportError:
-    print("Pillow is required: pip install pillow", file=sys.stderr)
-    sys.exit(1)
+import struct
+import zlib
 
 OUTDIR = os.path.join(os.path.dirname(__file__), "..",
                       "Resources", "Assets.xcassets", "AppIcon.appiconset")
 
 
+def _png_chunk(kind, data):
+    chunk = struct.pack(">I", len(data)) + kind + data
+    return chunk + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+
+def write_png(path, size, pixels):
+    """pixels: list of rows, each a list of (r, g, b, a) tuples."""
+    raw = b"".join(
+        b"\x00" + b"".join(struct.pack("BBBB", *px) for px in row)
+        for row in pixels)
+    png = (b"\x89PNG\r\n\x1a\n"
+           + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0))
+           + _png_chunk(b"IDAT", zlib.compress(raw, 6))
+           + _png_chunk(b"IEND", b""))
+    with open(path, "wb") as f:
+        f.write(png)
+
+
+def _thick_line(img, size, x0, y0, x1, y1, width, color):
+    steps = int(max(abs(x1 - x0), abs(y1 - y0)) * 2) + 1
+    r = width / 2
+    for i in range(steps + 1):
+        t = i / steps
+        cx = x0 + (x1 - x0) * t
+        cy = y0 + (y1 - y0) * t
+        for dy in range(-int(r) - 1, int(r) + 2):
+            for dx in range(-int(r) - 1, int(r) + 2):
+                if dx * dx + dy * dy > r * r:
+                    continue
+                x, y = int(cx + dx), int(cy + dy)
+                if 0 <= x < size and 0 <= y < size:
+                    img[y][x] = color
+
+
 def make(size, path):
-    img = Image.new("RGB", (size, size), (10, 20, 40))
-    d = ImageDraw.Draw(img, "RGBA")
+    img = []
     for y in range(size):
-        t = y / size
-        d.line([(0, y), (size, y)],
-               fill=(int(16 + 4 * t), int(42 + 68 * t), int(92 + 88 * t)))
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        [0, 0, size, size], radius=size // 5, fill=255)
-    img.putalpha(mask)
-    d = ImageDraw.Draw(img, "RGBA")
-    d.arc([size * 0.2, size * 0.55, size * 0.8, size * 0.85],
-          start=200, end=340, fill=(255, 255, 255, 220),
-          width=max(2, size // 40))
-    try:
-        font = ImageFont.truetype(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            int(size * 0.55))
-    except Exception:
-        font = ImageFont.load_default()
-    d.text((size / 2, size * 0.42), "K", font=font,
-           fill=(255, 255, 255, 255), anchor="mm")
-    img.save(path)
+        t = y / max(size - 1, 1)
+        r = int(16 + 4 * t)
+        g = int(42 + 68 * t)
+        b = int(92 + 88 * t)
+        # rounded-corner mask: transparent outside the corner radius
+        row = []
+        rad = size // 5
+        for x in range(size):
+            dx = max(rad - x, 0, x - (size - 1 - rad))
+            dy = max(rad - y, 0, y - (size - 1 - rad))
+            a = 0 if dx * dx + dy * dy > rad * rad else 255
+            row.append((r, g, b, a))
+        img.append(row)
+    white = (255, 255, 255, 255)
+    w = max(2, size // 12)
+    # Bold 'K': vertical bar + upper and lower diagonals.
+    _thick_line(img, size, size * 0.30, size * 0.22, size * 0.30, size * 0.78, w, white)
+    _thick_line(img, size, size * 0.32, size * 0.52, size * 0.70, size * 0.24, w, white)
+    _thick_line(img, size, size * 0.36, size * 0.48, size * 0.72, size * 0.78, w, white)
+    write_png(path, size, img)
 
 
 def main():
