@@ -231,23 +231,23 @@ public final class IPAEngine: IPAEngineProtocol {
 
         return IPAInspectionReport(
             metadata: metadata,
-            appBundleURLs: extracted.appBundleURLs,
             architectures: architectures,
+            linkedLibraries: linkedLibraries,
+            entitlements: entitlements.mapValues { String(describing: $0) },
+            warnings: warnings,
+            appBundleURLs: extracted.appBundleURLs,
             isFatBinary: isFat,
             isEncrypted: isEncrypted,
-            linkedLibraries: linkedLibraries,
             rpaths: rpaths,
             segments: segments,
             uuids: uuids,
             minimumOSVersion: minimumOSVersion,
             sdkVersion: sdkVersion,
-            entitlements: entitlements.mapValues { String(describing: $0) },
             hasCodeSignature: hasCodeSignature,
             hasProvisioningProfile: fileManager.fileExists(atPath: provisioningURL.path),
             extensionBundleIdentifiers: metadata.extensionBundleIdentifiers,
             frameworkNames: metadata.frameworkNames,
-            iconData: metadata.iconData,
-            warnings: warnings
+            iconData: metadata.iconData
         )
     }
 
@@ -413,9 +413,9 @@ public final class IPAEngine: IPAEngineProtocol {
             buildVersion: build,
             minimumOSVersion: minimumOS,
             executableName: executable,
+            architectures: [],
             fileSize: fileSize,
             fileURL: fileURL,
-            architectures: [],
             supportedDeviceFamilies: deviceFamilies,
             requiresiPhoneOS: reader.bool(dict, "LSRequiresIPhoneOS") ?? false,
             bundleDisplayName: reader.string(dict, "CFBundleDisplayName"),

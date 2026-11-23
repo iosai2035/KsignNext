@@ -105,6 +105,7 @@ public enum IPAError: LocalizedError, Equatable {
     case tooLarge(sizeBytes: Int64, limitBytes: Int64)
     case tooManyEntries(count: Int, limit: Int)
     case missingPayload
+    case noAppBundleFound
     case multipleAppsFound(count: Int)
     case missingInfoPlist
     case invalidInfoPlist(reason: String)
@@ -136,6 +137,7 @@ public enum IPAError: LocalizedError, Equatable {
         case .tooLarge(let size, let limit): return "The file is \(size) bytes, which exceeds the \(limit) byte limit."
         case .tooManyEntries(let count, let limit): return "The archive contains \(count) entries, which exceeds the limit of \(limit)."
         case .missingPayload: return "The IPA contains no Payload folder."
+        case .noAppBundleFound: return "The IPA contains no app bundle."
         case .multipleAppsFound(let count): return "The IPA contains \(count) apps; exactly one is expected."
         case .missingInfoPlist: return "The app bundle contains no Info.plist."
         case .invalidInfoPlist(let reason): return "The app Info.plist is invalid: \(reason)"
@@ -162,6 +164,7 @@ public enum DownloadError: LocalizedError, Equatable {
     case invalidURL(String)
     case insecureURL(String)
     case httpStatus(Int)
+    case contentLengthMismatch(expected: Int64, actual: Int64)
     case noData
     case checksumMismatch(expected: String, actual: String)
     case insufficientSpace(requiredBytes: Int64)
@@ -173,6 +176,7 @@ public enum DownloadError: LocalizedError, Equatable {
         case .invalidURL(let url): return "The download URL is invalid: \(url)"
         case .insecureURL(let url): return "Downloads require HTTPS; the URL “\(url)” is not secure."
         case .httpStatus(let code): return "The server returned HTTP status \(code)."
+        case .contentLengthMismatch(let expected, let actual): return "Download size mismatch: expected \(expected) bytes, received \(actual) bytes."
         case .noData: return "The download finished but returned no data."
         case .checksumMismatch(let expected, let actual): return "Checksum mismatch: expected \(expected), received \(actual)."
         case .insufficientSpace(let required): return "Not enough free space: \(required) bytes are required."

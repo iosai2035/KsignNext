@@ -224,7 +224,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         if let httpResponse = downloadTask.response as? HTTPURLResponse,
            !(200..<300).contains(httpResponse.statusCode) {
             Task { [weak self] in
-                await self?.engine?.failDownload(id: info.id, error: .invalidHTTPStatus(httpResponse.statusCode))
+                await self?.engine?.failDownload(id: info.id, error: .httpStatus(httpResponse.statusCode))
             }
             return
         }
@@ -252,7 +252,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
                     Task { [weak self] in
                         await self?.engine?.failDownload(
                             id: info.id,
-                            error: .hashMismatch(expected: expectedHash, actual: actualHash)
+                            error: .checksumMismatch(expected: expectedHash, actual: actualHash)
                         )
                     }
                     return
@@ -269,7 +269,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         } catch {
             let message = error.localizedDescription
             Task { [weak self] in
-                await self?.engine?.failDownload(id: info.id, error: .downloadFailed(message))
+                await self?.engine?.failDownload(id: info.id, error: .underlying(message))
             }
         }
     }
@@ -718,7 +718,7 @@ public actor DownloadEngine {
 
     func handleOrphanedDownload(taskIdentifier: Int) {
         guard let id = taskIdentifierToID[taskIdentifier] else { return }
-        failDownload(id: id, error: .downloadFailed("Download finished without a matching record."))
+        failDownload(id: id, error: .underlying("Download finished without a matching record."))
     }
 
     func storeResumeData(id: UUID, data: Data) {

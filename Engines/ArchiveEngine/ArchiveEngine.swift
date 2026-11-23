@@ -115,7 +115,7 @@ public enum ZipCompression {
 
         var output = Data()
         output.reserveCapacity(min(expectedSize, 16 * 1024 * 1024))
-        var stream = compression_stream()
+        var stream = compression_stream(dst_ptr: nil, dst_size: 0, src_ptr: nil, src_size: 0, state: nil)
         guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else {
             throw IPAError.corruptZIP("Failed to initialise deflate decoder.")
         }
@@ -173,11 +173,13 @@ public enum ZipCompression {
         let bound = data.count + 64
         var encoded = Data(count: bound)
         let encodedSize = encoded.withUnsafeMutableBytes { dst -> Int in
-            data.withUnsafeBytes { src -> Int in
-                compression_encode_buffer(
-                    dst.baseAddress?.assumingMemoryBound(to: UInt8.self),
+            guard let dstPtr = dst.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 0 }
+            return data.withUnsafeBytes { src -> Int in
+                guard let srcPtr = src.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 0 }
+                return compression_encode_buffer(
+                    dstPtr,
                     bound,
-                    src.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                    srcPtr,
                     data.count,
                     nil,
                     COMPRESSION_ZLIB

@@ -150,9 +150,14 @@ public final class CertificateEngine: CertificateEngineProtocol, @unchecked Send
         guard let imported = items as? [[String: Any]], let first = imported.first else {
             throw AppError.certificate(.invalidFormat(reason: "The P12 file is empty."))
         }
-        guard let identity = first[kSecImportItemIdentity as String] as? SecIdentity else {
+        guard let identityObject = first[kSecImportItemIdentity as String] as? AnyObject,
+              CFGetTypeID(identityObject) == SecIdentityGetTypeID() else {
             throw AppError.certificate(.missingPrivateKey)
         }
+        // The type ID was verified above, so this bit-cast is safe.
+        // (`as? SecIdentity` is rejected by the Swift 6 compiler because
+        // a conditional downcast to a CoreFoundation type always succeeds.)
+        let identity = unsafeBitCast(identityObject, to: SecIdentity.self)
         var privateKey: SecKey?
         let keyStatus = SecIdentityCopyPrivateKey(identity, &privateKey)
         guard keyStatus == errSecSuccess, privateKey != nil else {
@@ -175,16 +180,15 @@ public final class CertificateEngine: CertificateEngineProtocol, @unchecked Send
     private func model(from certificate: SecCertificate, name: String, fileURL: URL?) async throws -> CertificateModel {
         let derData = SecCertificateCopyData(certificate) as Data
         let fingerprint = sha256Hex(of: derData)
-        let values = certificateValues(certificate)
+        let fields = parseCertificateFields(derData)
 
-        let commonName = stringValue(for: kSecOIDCommonName, in: values)
+        let commonName = fields.subjectCommonName
             ?? SecCertificateCopySubjectSummary(certificate) as String?
-        let teamIdentifier = stringValue(for: kSecOIDOrganizationalUnit, in: values)
-        let serial = dataValue(for: kSecOIDX509V1SerialNumber, in: values)
-            .map { $0.map { String(format: "%02x", $0) }.joined() }
-        let notBefore = dateValue(for: kSecOIDX509V1ValidityNotBefore, in: values)
-        let notAfter = dateValue(for: kSecOIDX509V1ValidityNotAfter, in: values)
-        let issuer = issuerName(from: values)
+        let teamIdentifier = fields.subjectOrganizationalUnit
+        let serial = fields.serialHex
+        let notBefore = fields.notBefore
+        let notAfter = fields.notAfter
+        let issuer = fields.issuerDisplay
 
         var model = CertificateModel(
             name: name.isEmpty ? (commonName ?? "Certificate") : name,
@@ -202,49 +206,191 @@ public final class CertificateEngine: CertificateEngineProtocol, @unchecked Send
         return model
     }
 
-    /// `SecCertificateCopyValues` result, keyed by OID string.
-    private func certificateValues(_ certificate: SecCertificate) -> [String: [String: Any]] {
-        let keys: [CFString] = [
-            kSecOIDCommonName,
-            kSecOIDOrganizationalUnit,
-            kSecOIDX509V1SerialNumber,
-            kSecOIDX509V1ValidityNotBefore,
-            kSecOIDX509V1ValidityNotAfter,
-            kSecOIDX509V1IssuerName
-        ]
-        guard let raw = SecCertificateCopyValues(certificate, keys as CFArray, nil) as? [String: [String: Any]] else {
-            return [:]
+    // MARK: - DER parsing (no kSecOID* constants)
+
+    /// Fields pulled from an X.509 certificate's DER encoding.
+    private struct CertificateFields {
+        var serialHex: String?
+        var notBefore: Date?
+        var notAfter: Date?
+        var subjectCommonName: String?
+        var subjectOrganizationalUnit: String?
+        var issuerDisplay: String?
+    }
+
+    /// One DER tag-length-value element.
+    private struct DERTLV {
+        var tag: UInt8
+        var content: Data
+        var totalLength: Int
+    }
+
+    private static func derReadTLV(_ data: Data, at offset: Int) -> DERTLV? {
+        guard offset < data.count, offset + 1 < data.count else { return nil }
+        let tag = data[offset]
+        var index = offset + 1
+        let lengthByte = data[index]
+        index += 1
+        var length: Int
+        if lengthByte & 0x80 == 0 {
+            length = Int(lengthByte)
+        } else {
+            let count = Int(lengthByte & 0x7F)
+            guard count > 0, count <= 4, index + count <= data.count else { return nil }
+            length = 0
+            for _ in 0..<count {
+                length = (length << 8) | Int(data[index])
+                index += 1
+            }
         }
-        return raw
+        guard index + length <= data.count else { return nil }
+        let content = data.subdata(in: index..<(index + length))
+        return DERTLV(tag: tag, content: content, totalLength: (index - offset) + length)
     }
 
-    private func valueDictionary(for oid: CFString, in values: [String: [String: Any]]) -> [String: Any]? {
-        values[oid as String]
+    private static func derChildren(of content: Data) -> [DERTLV] {
+        var result: [DERTLV] = []
+        var offset = 0
+        while offset < content.count, let tlv = derReadTLV(content, at: offset) {
+            guard tlv.totalLength > 0 else { break }
+            result.append(tlv)
+            offset += tlv.totalLength
+        }
+        return result
     }
 
-    private func stringValue(for oid: CFString, in values: [String: [String: Any]]) -> String? {
-        valueDictionary(for: oid, in: values)?[kSecPropertyKeyValue as String] as? String
+    private static func derOIDString(_ content: Data) -> String? {
+        guard !content.isEmpty else { return nil }
+        var arcs: [Int] = []
+        let first = Int(content[0])
+        arcs.append(min(first / 40, 2))
+        arcs.append(first - 40 * arcs[0])
+        var value = 0
+        for byte in content.dropFirst() {
+            value = (value << 7) | (Int(byte) & 0x7F)
+            if byte & 0x80 == 0 {
+                arcs.append(value)
+                value = 0
+            }
+        }
+        return arcs.map(String.init).joined(separator: ".")
     }
 
-    private func dataValue(for oid: CFString, in values: [String: [String: Any]]) -> Data? {
-        valueDictionary(for: oid, in: values)?[kSecPropertyKeyValue as String] as? Data
-    }
-
-    private func dateValue(for oid: CFString, in values: [String: [String: Any]]) -> Date? {
-        valueDictionary(for: oid, in: values)?[kSecPropertyKeyValue as String] as? Date
-    }
-
-    /// Builds a readable issuer string ("CN=…, O=…") from the issuer RDN list.
-    private func issuerName(from values: [String: [String: Any]]) -> String? {
-        guard let rdns = valueDictionary(for: kSecOIDX509V1IssuerName, in: values)?[kSecPropertyKeyValue as String] as? [[String: Any]] else {
+    private static func derStringValue(_ tlv: DERTLV) -> String? {
+        switch tlv.tag {
+        case 0x0C, 0x13, 0x16: // UTF8String, PrintableString, IA5String
+            return String(data: tlv.content, encoding: .utf8)
+        case 0x14: // TeletexString (T61)
+            return String(data: tlv.content, encoding: .utf8)
+                ?? String(data: tlv.content, encoding: .isoLatin1)
+        case 0x1E: // BMPString (UTF-16BE)
+            return String(data: tlv.content, encoding: .utf16BigEndian)
+        default:
             return nil
         }
-        let parts = rdns.compactMap { rdn -> String? in
-            guard let label = rdn[kSecPropertyKeyLabel as String] as? String,
-                  let value = rdn[kSecPropertyKeyValue as String] as? String else { return nil }
-            return "\(label)=\(value)"
+    }
+
+    private static func derDateValue(_ tlv: DERTLV) -> Date? {
+        guard let text = String(data: tlv.content, encoding: .ascii) else { return nil }
+        let digits = text.filter { $0.isNumber }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .current
+        if tlv.tag == 0x17 { // UTCTime YYMMDDHHMMSS(Z)
+            guard digits.count >= 10 else { return nil }
+            let yy = Int(digits.prefix(2)) ?? 0
+            let year = yy < 50 ? 2000 + yy : 1900 + yy
+            let month = Int(digits.dropFirst(2).prefix(2)) ?? 0
+            let day = Int(digits.dropFirst(4).prefix(2)) ?? 0
+            let hour = Int(digits.dropFirst(6).prefix(2)) ?? 0
+            let minute = Int(digits.dropFirst(8).prefix(2)) ?? 0
+            let second = digits.count >= 12 ? (Int(digits.dropFirst(10).prefix(2)) ?? 0) : 0
+            return calendar.date(from: DateComponents(year: year, month: month, day: day, hour: hour, minute: minute, second: second))
+        } else if tlv.tag == 0x18 { // GeneralizedTime YYYYMMDDHHMMSS(Z)
+            guard digits.count >= 12 else { return nil }
+            let year = Int(digits.prefix(4)) ?? 0
+            let month = Int(digits.dropFirst(4).prefix(2)) ?? 0
+            let day = Int(digits.dropFirst(6).prefix(2)) ?? 0
+            let hour = Int(digits.dropFirst(8).prefix(2)) ?? 0
+            let minute = Int(digits.dropFirst(10).prefix(2)) ?? 0
+            let second = digits.count >= 14 ? (Int(digits.dropFirst(12).prefix(2)) ?? 0) : 0
+            return calendar.date(from: DateComponents(year: year, month: month, day: day, hour: hour, minute: minute, second: second))
         }
-        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+        return nil
+    }
+
+    private static func derDistinguishedName(_ nameTLV: DERTLV) -> [(oid: String, value: String)] {
+        var result: [(oid: String, value: String)] = []
+        for rdn in derChildren(of: nameTLV.content) {
+            for atv in derChildren(of: rdn.content) {
+                let parts = derChildren(of: atv.content)
+                guard parts.count >= 2, parts[0].tag == 0x06,
+                      let oid = derOIDString(parts[0].content),
+                      let value = derStringValue(parts[1]) else { continue }
+                result.append((oid: oid, value: value))
+            }
+        }
+        return result
+    }
+
+    private static func derShortLabel(for oid: String) -> String {
+        switch oid {
+        case "2.5.4.3": return "CN"
+        case "2.5.4.6": return "C"
+        case "2.5.4.7": return "L"
+        case "2.5.4.8": return "ST"
+        case "2.5.4.10": return "O"
+        case "2.5.4.11": return "OU"
+        case "2.5.4.5": return "SERIALNUMBER"
+        case "2.5.4.42": return "GN"
+        case "2.5.4.4": return "SN"
+        default: return oid
+        }
+    }
+
+    /// Walks Certificate -> TBSCertificate and extracts the serial number,
+    /// validity window, subject CN/OU and a readable issuer string.
+    /// The `kSecOID*` constants are not visible in the iOS SDK's Swift
+    /// interface, so this reads the DER bytes `SecCertificateCopyData`
+    /// already provides instead of `SecCertificateCopyValues`.
+    private func parseCertificateFields(_ der: Data) -> CertificateFields {
+        var fields = CertificateFields()
+        guard let outer = Self.derReadTLV(der, at: 0), outer.tag == 0x30 else { return fields }
+        let certChildren = Self.derChildren(of: outer.content)
+        guard let tbs = certChildren.first, tbs.tag == 0x30 else { return fields }
+        let tbsChildren = Self.derChildren(of: tbs.content)
+        var index = 0
+        // Optional explicit version [0].
+        if index < tbsChildren.count, tbsChildren[index].tag == 0xA0 { index += 1 }
+        // Serial number INTEGER.
+        if index < tbsChildren.count, tbsChildren[index].tag == 0x02 {
+            fields.serialHex = tbsChildren[index].content.map { String(format: "%02x", $0) }.joined()
+            index += 1
+        }
+        // Signature AlgorithmIdentifier — skip.
+        index += 1
+        // Issuer Name.
+        if index < tbsChildren.count, tbsChildren[index].tag == 0x30 {
+            let issuer = Self.derDistinguishedName(tbsChildren[index])
+            let parts = issuer.map { "\(Self.derShortLabel(for: $0.oid))=\($0.value)" }
+            fields.issuerDisplay = parts.isEmpty ? nil : parts.joined(separator: ", ")
+            index += 1
+        }
+        // Validity.
+        if index < tbsChildren.count, tbsChildren[index].tag == 0x30 {
+            let validity = Self.derChildren(of: tbsChildren[index].content)
+            if validity.count >= 2 {
+                fields.notBefore = Self.derDateValue(validity[0])
+                fields.notAfter = Self.derDateValue(validity[1])
+            }
+            index += 1
+        }
+        // Subject Name.
+        if index < tbsChildren.count, tbsChildren[index].tag == 0x30 {
+            let subject = Self.derDistinguishedName(tbsChildren[index])
+            fields.subjectCommonName = subject.first { $0.oid == "2.5.4.3" }?.value
+            fields.subjectOrganizationalUnit = subject.first { $0.oid == "2.5.4.11" }?.value
+        }
+        return fields
     }
 
     private func kind(forCommonName commonName: String?) -> CertificateKind {

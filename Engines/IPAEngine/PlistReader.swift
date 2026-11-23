@@ -83,7 +83,7 @@ public struct PlistReader {
             return try PropertyListSerialization.data(
                 fromPropertyList: dictionary,
                 format: .xml,
-                options: []
+                options: PropertyListSerialization.WriteOptions()
             )
         } catch {
             throw IPAError.invalidPlist("Cannot serialize plist: \(error.localizedDescription)")
@@ -96,7 +96,7 @@ public struct PlistReader {
             return try PropertyListSerialization.data(
                 fromPropertyList: dictionary,
                 format: .binary,
-                options: []
+                options: PropertyListSerialization.WriteOptions()
             )
         } catch {
             throw IPAError.invalidPlist("Cannot serialize plist: \(error.localizedDescription)")
