@@ -182,20 +182,18 @@ def main():
 
     groups = []
     all_files = app_src + app_res + test_src + ui_src + app_headers
-    dirs = sorted({os.path.dirname(r) for r in all_files})
-    for d in dirs:
-        kids = []
-        for r in all_files:
-            if os.path.dirname(r) == d:
-                kids.append(stable_id("fileref:" + r))
-        for sub in sorted({x for x in dirs if os.path.dirname(x) == d}):
-            kids.append(group_id(sub))
-        groups.append(
-            f'\t\t{group_id(d)} /* {esc(os.path.basename(d) or d)} */ = '
-            f'{{isa = PBXGroup; children = ({", ".join(k + " /* */" for k in kids)}); '
-            f'path = {esc(os.path.basename(d))}; sourceTree = "<group>"; }};')
-    # Fix: children entries above carry a bogus trailing comment; rebuild cleanly
-    groups = []
+    # Every directory that contains files AND every ancestor of such a
+    # directory needs a PBXGroup. A top-level dir like Core/ or Tests/
+    # that holds only subdirectories still gets referenced as a child
+    # of the root group, so omitting its PBXGroup leaves a dangling
+    # reference and Xcode reports "project is damaged / parse error".
+    dirs = set()
+    for r in all_files:
+        d = os.path.dirname(r)
+        while d:
+            dirs.add(d)
+            d = os.path.dirname(d)
+    dirs = sorted(dirs)
     for d in dirs:
         kids = []
         for r in all_files:
