@@ -309,6 +309,8 @@ def main():
         # Skip empty settings entirely (e.g. DEVELOPMENT_TEAM until the
         # user supplies a real team id); the workflow sets it via
         # DEVELOPMENT_TEAM from the APPLE_TEAM_ID secret when present.
+        # (Verified 2026-11-23: a strict plist parse of the generated
+        # project passes only with this filter in place.)
         items = ";\n".join(f"\t\t\t\t{k} = {v}" for k, v in settings.items()
                             if v != "")
         a(f'\t\t{cid} /* {name} */ = {{isa = XCBuildConfiguration; '
