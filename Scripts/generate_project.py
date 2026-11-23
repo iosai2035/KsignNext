@@ -61,6 +61,15 @@ def collect():
         for dirpath, _dirs, files in os.walk(base):
             for f in sorted(files):
                 rel = os.path.relpath(os.path.join(dirpath, f), ROOT)
+                if ".xcassets/" in rel.replace(os.sep, "/"):
+                    # Files inside an asset catalog (Contents.json,
+                    # AppIcon PNGs, ...) are compiled by actool as part
+                    # of the catalog. Copying them loose into the
+                    # Resources phase too makes two copy commands produce
+                    # the same `KsignNext.app/Contents.json` and Xcode
+                    # fails the build with "Multiple commands produce ..."
+                    # (verified live in CI run 11, 2026-11-23).
+                    continue
                 if rel.endswith(".swift"):
                     app_sources.append(rel)
                 elif rel.endswith(".h"):
@@ -71,6 +80,12 @@ def collect():
                     app_headers.append(rel)
                 else:
                     out.append(rel)
+    # The asset catalog itself goes into the Resources phase as one
+    # folder.assetcatalog entry (compiled by actool); without it the
+    # app icon / accent colour never make it into the bundle.
+    catalog = os.path.join(ROOT, "Resources", "Assets.xcassets")
+    if os.path.isdir(catalog):
+        app_resources.append("Resources/Assets.xcassets")
     for dirpath, _dirs, files in os.walk(os.path.join(ROOT, "Tests")):
         for f in sorted(files):
             if not f.endswith(".swift"):
