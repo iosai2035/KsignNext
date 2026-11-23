@@ -59,12 +59,13 @@ bool  ZUtil::SystemExecV(const char* szCmd, ...)
 		return false;
 	}
 
-	int status = system(szRealCmd);
-	if (0 != status) {
-		ZLog::ErrorV("SystemExec: \"%s\", error!\n", szRealCmd);
-		return false;
-	}
-	return true;
+	// iOS adaptation (Ksign Next): system(3) is unavailable in the
+	// iOS SDK, and the only caller of this helper was the zsign
+	// command-line tool ("ideviceinstaller install ..."), which is
+	// not part of this library build. Fail honestly instead of
+	// shelling out; nothing in the signing path calls this.
+	ZLog::ErrorV("SystemExec: \"%s\", not available on iOS!\n", szRealCmd);
+	return false;
 }
 
 uint16_t ZUtil::Swap(uint16_t value)

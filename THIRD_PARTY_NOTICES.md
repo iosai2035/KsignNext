@@ -28,6 +28,10 @@ resolved versions here after the first macOS build.
   are NOT included — only `zlib.h`/`zconf.h` are vendored and the
   implementation is the system libz (`-lz`, in the iOS SDK); and the
   Windows-only `iowin32.*` / `mztools.*` minizip files are omitted.
+  One iOS adaptation: `ZUtil::SystemExecV` in `common/util.cpp` is
+  stubbed to log and return false, because `system(3)` is unavailable
+  in the iOS SDK and its only caller was the zsign command-line tool
+  (`ideviceinstaller install ...`), which is not part of this build.
 - Used through our own adapter only: `Engines/SigningEngine/ZsignAdapter.swift`
   (the `ZsignBridgeBackend`, which calls the C functions) and
   `Engines/SigningEngine/ZsignBridge.h` (our own C function names:
