@@ -5,6 +5,9 @@ import XCTest
 /// Import -> inspect -> sign attempt -> verify -> export, end to end at the
 /// view-model level. The signing step asserts the honest unavailable-backend
 /// error when zsign is not linked — it never fakes success.
+// The view models under test are @MainActor, so the whole test class
+// runs on the main actor and may call their init, properties and methods directly.
+@MainActor
 final class ImportSignExportFlowTests: XCTestCase {
 
     private var tempDir: URL!

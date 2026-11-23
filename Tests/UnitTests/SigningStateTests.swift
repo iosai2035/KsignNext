@@ -2,6 +2,9 @@ import XCTest
 @testable import KsignNext
 
 
+// The view models under test are @MainActor, so the whole test class
+// runs on the main actor and may call their init, properties and methods directly.
+@MainActor
 final class SigningStateTests: XCTestCase {
 
     func testUnavailableBackendThrowsHonestError() async {
