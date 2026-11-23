@@ -344,6 +344,13 @@ def main():
         "MARKETING_VERSION": "1.0",
         "PRODUCT_BUNDLE_IDENTIFIER": BUNDLE_ID,
         "PRODUCT_NAME": '"$(TARGET_NAME)"',
+        # Without an explicit SDKROOT, xcodebuild defaults to the macOS
+        # SDK: the scheme then offers only macOS destinations and both
+        # `test` (iPhone 17 simulator) and `archive`
+        # (generic/platform=iOS) fail with "Unable to find a destination"
+        # (verified live in CI run 10, 2026-11-23). Real projects set
+        # SDKROOT = iphoneos on their iOS targets.
+        "SDKROOT": "iphoneos",
         "SWIFT_OBJC_BRIDGING_HEADER": "Engines/SigningEngine/ZsignBridge.h",
         "SWIFT_VERSION": "5.0",
         "SWIFT_STRICT_CONCURRENCY": "complete",
@@ -368,6 +375,7 @@ def main():
             "LD_RUNPATH_SEARCH_PATHS": '"$(inherited) @executable_path/Frameworks @loader_path/Frameworks"',
             "PRODUCT_BUNDLE_IDENTIFIER": BUNDLE_ID + ".tests",
             "PRODUCT_NAME": '"$(TARGET_NAME)"',
+            "SDKROOT": "iphoneos",
             "SWIFT_VERSION": "5.0",
             "TARGETED_DEVICE_FAMILY": '"1,2"',
             "TEST_HOST": '"$(BUILT_PRODUCTS_DIR)/KsignNext.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/KsignNext"',
@@ -378,6 +386,7 @@ def main():
             "IPHONEOS_DEPLOYMENT_TARGET": "16.0",
             "PRODUCT_BUNDLE_IDENTIFIER": BUNDLE_ID + ".uitests",
             "PRODUCT_NAME": '"$(TARGET_NAME)"',
+            "SDKROOT": "iphoneos",
             "SWIFT_VERSION": "5.0",
             "TARGETED_DEVICE_FAMILY": '"1,2"',
             "TEST_TARGET_NAME": "KsignNext",
