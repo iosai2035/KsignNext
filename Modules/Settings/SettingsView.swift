@@ -49,6 +49,7 @@ struct SettingsView: View {
     @AppStorage("ksign.notifications.downloadsDone") private var notifyDownloadsDone = true
     @StateObject private var viewModel = SettingsViewModel()
     @State private var showClearConfirm = false
+    @EnvironmentObject private var coordinator: AppCoordinator
 
     var body: some View {
         NavigationStack {
@@ -92,7 +93,7 @@ struct SettingsView: View {
                 }
                 Section(NSLocalizedString("settings.section.install", comment: "")) {
                     Toggle(NSLocalizedString("settings.install.autostart", comment: ""), isOn: $autoStartServer)
-                    NavigationLink(NSLocalizedString("tab.installation", comment: "")) { InstallationView() }
+                    NavigationLink(NSLocalizedString("tab.installation", comment: "")) { InstallationView(container: coordinator.container) }
                 }
                 Section(NSLocalizedString("settings.section.security", comment: "")) {
                     Toggle(NSLocalizedString("settings.security.passcode", comment: ""), isOn: $requirePasscode)

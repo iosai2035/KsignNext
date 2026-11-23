@@ -21,6 +21,10 @@ enum SigningBackendError: LocalizedError, Equatable {
     }
 }
 
+/// Kept intentionally: the tests assert the honest "backend not
+/// linked" error through this service (SigningStateTests,
+/// ImportSignExportFlowTests). The wizard itself no longer uses it —
+/// it runs the real `SignApplicationUseCase` now.
 protocol SigningServiceProtocol {
     func sign(appURL: URL, certificateName: String, bundleID: String) async throws -> URL
 }
@@ -70,9 +74,28 @@ final class SigningCenterViewModel: ObservableObject {
     @Published var showCertPicker = false
     @Published var showProvisionPicker = false
 
-    private let signingService: SigningServiceProtocol
-    init(signingService: SigningServiceProtocol = UnavailableSigningService()) {
-        self.signingService = signingService
+    private let container: DependencyContainer
+    private let signUseCase: SignApplicationUseCase
+    private let verifyUseCase: VerifySignatureUseCase
+    private let verificationEngine: VerificationEngine
+
+    /// - Parameters:
+    ///   - container: when nil, a fresh `DependencyContainer()` is built
+    ///     and its factories are used (so no-arg construction in tests
+    ///     keeps working); the app passes the coordinator's container.
+    ///   - signUseCase / verifyUseCase / verificationEngine: injectable
+    ///     overrides; nil falls back to the container's factories.
+    init(
+        container: DependencyContainer? = nil,
+        signUseCase: SignApplicationUseCase? = nil,
+        verifyUseCase: VerifySignatureUseCase? = nil,
+        verificationEngine: VerificationEngine? = nil
+    ) {
+        let container = container ?? DependencyContainer()
+        self.container = container
+        self.signUseCase = signUseCase ?? container.makeSignApplicationUseCase()
+        self.verifyUseCase = verifyUseCase ?? container.makeVerifySignatureUseCase()
+        self.verificationEngine = verificationEngine ?? container.verificationEngine
     }
 
     var availableApps: [String] { listNames(folder: "ImportedApps", ext: "ipa") }
@@ -141,17 +164,26 @@ final class SigningCenterViewModel: ObservableObject {
         stage = NSLocalizedString("signing.stage.preparing", comment: "")
         logLines = [stage]
         step = .progress
+        errorMessage = nil
         do {
-            progress = 0.3
-            stage = NSLocalizedString("signing.stage.signing", comment: "")
-            logLines.append(stage)
-            let output = try await signingService.sign(appURL: appURL, certificateName: selectedCertificateName, bundleID: bundleID)
-            signedOutputURL = output
+            let request = try await buildSigningRequest(appURL: appURL, docs: docs)
+            let result = try await signUseCase.execute(request) { [weak self] progressEvent in
+                // The progress closure is @Sendable/nonisolated; hop back
+                // to the main actor to touch @Published state.
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.progress = progressEvent.progress
+                    self.stage = progressEvent.message
+                    self.logLines.append(progressEvent.message)
+                }
+            }
+            signedOutputURL = result.signedFileURL
             progress = 1
             stage = NSLocalizedString("signing.stage.done", comment: "")
             logLines.append(stage)
             step = .verification
-            verificationPassed = true
+            // verificationPassed stays nil until verifySignedApp() runs:
+            // signing success is not verification success.
         } catch {
             errorMessage = error.localizedDescription
             stage = NSLocalizedString("signing.stage.failed", comment: "")
@@ -161,17 +193,134 @@ final class SigningCenterViewModel: ObservableObject {
         isSigning = false
     }
 
+    /// Builds the full signing request from the wizard's fields,
+    /// resolving the picked names to repository records where the
+    /// repositories are the source of truth.
+    private func buildSigningRequest(appURL: URL, docs: URL) async throws -> SigningRequest {
+        // Imported record (only when the app came in through the import
+        // flow); otherwise a fresh correlation id — the use case does
+        // not look the imported id up, it only carries it into the
+        // persisted signing result.
+        let importedIPAID: UUID
+        if let records = try? await container.importedApplicationRepository.fetchAll(),
+           let match = records.first(where: { $0.fileURL.lastPathComponent == selectedAppName }) {
+            importedIPAID = match.id
+        } else {
+            importedIPAID = UUID()
+        }
+
+        // Certificate record. Importing a P12 in the Certificates tab
+        // registers it in the repository (see CertificatesViewModel),
+        // so a certificate picked here normally resolves; a file that
+        // was only copied into the workspace without registering
+        // cannot resolve, and the use case then refuses with a typed
+        // error instead of signing with the wrong identity.
+        var certificateID: UUID?
+        if !selectedCertificateName.isEmpty {
+            let certificates = (try? await container.certificateRepository.fetchAll()) ?? []
+            certificateID = certificates.first(where: {
+                $0.fileURL?.lastPathComponent == selectedCertificateName || $0.name == selectedCertificateName
+            })?.id
+        }
+
+        // Provisioning profile: parse the picked file to get its stable
+        // id (the engine's resolver matches profiles by this id).
+        var provisioningProfileID: UUID?
+        if !selectedProvisionName.isEmpty {
+            let provisionURL = docs.appendingPathComponent("Certificates/\(selectedProvisionName)")
+            let provisioningEngine = ProvisioningEngine(keychain: container.keychain, fileManager: container.files)
+            if let profile = try? await provisioningEngine.parseProvisioningProfile(at: provisionURL) {
+                provisioningProfileID = profile.id
+            }
+        }
+
+        // Entitlements: write the wizard text to a temp .entitlements
+        // file when the user entered any.
+        var entitlementsURL: URL?
+        if !entitlementsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("KsignNext-entitlements-\(UUID().uuidString).entitlements")
+            try entitlementsText.write(to: url, atomically: true, encoding: .utf8)
+            entitlementsURL = url
+        }
+
+        let injectionFiles: [URL] = selectedTweakNames.compactMap { name in
+            let url = docs.appendingPathComponent("Tweaks/\(name)")
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        }
+
+        let configuration = SigningConfiguration(
+            certificateID: certificateID,
+            provisioningProfileID: provisioningProfileID,
+            bundleIdentifier: bundleID,
+            displayName: appName.isEmpty ? nil : appName,
+            version: appVersion.isEmpty ? nil : appVersion,
+            entitlementsURL: entitlementsURL,
+            // The wizard verifies explicitly in the verification step
+            // (verifySignedApp), so the engine is not asked to verify
+            // inside the signing run.
+            verifyAfterSigning: false,
+            injectionFiles: injectionFiles
+        )
+        return SigningRequest(
+            importedIPAID: importedIPAID,
+            sourceURL: appURL,
+            configuration: configuration
+        )
+    }
+
+    /// Real post-sign verification of the signed IPA. Runs the
+    /// structural verification report AND the signing engine's own
+    /// verification, and passes only when both agree the signature is
+    /// present and matches the bundle id. The report's
+    /// provisioning-profile checks are deliberately NOT in the gate:
+    /// an ad-hoc signature has no profile and is still a valid
+    /// signature (the engine check above is the pass/fail for "the
+    /// signature is present and matches the bundle id").
     func verifySignedApp() {
         guard let output = signedOutputURL else { verificationPassed = false; return }
-        verificationPassed = FileManager.default.fileExists(atPath: output.path)
-        if verificationPassed == true { step = .export }
+        verificationPassed = nil
+        errorMessage = nil
+        Task {
+            do {
+                // The signed output is an IPA file, so verifyIPA (not
+                // verifyApp, which takes an extracted .app bundle).
+                let report = try await verificationEngine.verifyIPA(at: output)
+                let outcome = try await verifyUseCase.execute(signedURL: output, bundleIdentifier: bundleID)
+                let signatureCheckNames: Set<String> = [
+                    "info-plist-valid",
+                    "executable-exists",
+                    "code-signature-load-command",
+                    "code-resources",
+                    "bundle-id-matches-profile"
+                ]
+                let signatureChecks = report.checks.filter { signatureCheckNames.contains($0.name) }
+                let signatureOK = !signatureChecks.isEmpty && signatureChecks.allSatisfy(\.passed)
+                let passed = outcome.isValid && signatureOK
+                verificationPassed = passed
+                if passed {
+                    step = .export
+                } else {
+                    errorMessage = report.errors.first ?? NSLocalizedString("signing.error.verify", comment: "")
+                }
+            } catch {
+                verificationPassed = false
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     func exportSignedApp() -> URL? { signedOutputURL }
 }
 
 struct SigningCenterView: View {
-    @StateObject private var viewModel = SigningCenterViewModel()
+    @StateObject private var viewModel: SigningCenterViewModel
+
+    /// - Parameter container: the app's container (from the
+    ///   coordinator); nil builds a fresh one (tests / previews).
+    init(container: DependencyContainer? = nil) {
+        _viewModel = StateObject(wrappedValue: SigningCenterViewModel(container: container))
+    }
 
     var body: some View {
         NavigationStack {

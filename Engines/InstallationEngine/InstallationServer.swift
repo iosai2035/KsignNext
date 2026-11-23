@@ -9,13 +9,21 @@ import NIOHTTP1
 // DEPENDENCY: SwiftNIO is an SPM dependency declared in the Xcode project.
 // This file is the ONLY file in the installation engine that imports NIO;
 // the rest of the engine is guarded from it (see InstallationEngine.swift).
-// The loopback install server intentionally uses plain HTTP because it
-// only ever binds 127.0.0.1. If a TLS listener is added later, add the
-// swift-nio-ssl package (apple/swift-nio-ssl) — NIOSSL is NOT part of
-// the swift-nio package, and declaring it there breaks SPM resolution.
+// The server intentionally uses plain HTTP: it binds all interfaces
+// (0.0.0.0) so another device on the LAN can reach it, but it serves
+// ONLY the files registered for the install in progress — the single
+// IPA, the manifest plist, and the install icons. There is no directory
+// listing and no route that can reach any other user file. If a TLS
+// listener is added later, add the swift-nio-ssl package
+// (apple/swift-nio-ssl) — NIOSSL is NOT part of the swift-nio package,
+// and declaring it there breaks SPM resolution.
 //
 // BEHAVIOUR:
-// * Binds a random port in 4000-8000 on 127.0.0.1 (localhost) only.
+// * Binds a random port in 4000-8000 on all interfaces (0.0.0.0) and
+//   advertises the device's LAN address (en0) in the returned base URL,
+//   falling back to 127.0.0.1 when no LAN address exists — so the
+//   itms-services URL works from another device on the same network as
+//   well as on this device.
 // * Serves ONLY the files registered for the install in progress — the
 //   single IPA, the manifest plist, and the install icons. There is no
 //   directory listing and no route that can reach any other user file.
@@ -76,10 +84,13 @@ public final class NIOInstallationServer: InstallationServerProtocol, @unchecked
             do {
                 // `get()` blocks the calling (non-event-loop) thread until
                 // the bind completes; it is a one-time startup cost.
-                let bound = try await bootstrap.bind(host: "127.0.0.1", port: port).get()
+                // 0.0.0.0: listen on every interface (Wi-Fi/LAN included),
+                // so another device on the same network can install.
+                let bound = try await bootstrap.bind(host: "0.0.0.0", port: port).get()
+                let advertisedHost = Self.lanIPAddress() ?? "127.0.0.1"
                 withLock {
                     channel = bound
-                    boundBaseURL = URL(string: "http://127.0.0.1:\(port)")
+                    boundBaseURL = URL(string: "http://\(advertisedHost):\(port)")
                 }
                 scheduleAutoStop(after: timeout)
                 guard let base = baseURL else {
@@ -92,8 +103,26 @@ public final class NIOInstallationServer: InstallationServerProtocol, @unchecked
             }
         }
         throw InstallationError.serverStartFailed(
-            "Could not bind a localhost port in 4000-8000: \(lastError?.localizedDescription ?? "unknown error")"
+            "Could not bind a port in 4000-8000: \(lastError?.localizedDescription ?? "unknown error")"
         )
+    }
+
+    /// The device's IPv4 LAN address (en0), for advertising the server
+    /// to other devices on the same network. Nil when there is no Wi-Fi
+    /// interface address (then the server is advertised on loopback).
+    private static func lanIPAddress() -> String? {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+        for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let interface = ptr.pointee
+            guard interface.ifa_addr.pointee.sa_family == UInt8(AF_INET),
+                  String(cString: interface.ifa_name) == "en0" else { continue }
+            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len), &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST)
+            return String(cString: hostname)
+        }
+        return nil
     }
 
     public func serve(file: InstallationServerFile) async throws {

@@ -12,10 +12,12 @@ import Foundation
 //    declared in the Xcode project); when SwiftNIO is not linked, the
 //    engine is constructed with `UnsupportedInstallationServer`, which
 //    throws a clear error instead of pretending the install works.
-//    The server binds a random port in 4000-8000 on 127.0.0.1 only, serves
-//    ONLY the single IPA + manifest + icons for the install in progress
-//    (no directory listing, no access to other user files), and shuts
-//    down after the install or after the timeout.
+//    The server binds a random port in 4000-8000 on all interfaces
+//    (0.0.0.0) and advertises the device's LAN address so another
+//    device on the same network can install, serves ONLY the single
+//    IPA + manifest + icons for the install in progress (no directory
+//    listing, no access to other user files), and shuts down after the
+//    install or after the timeout.
 // 2. SideStore export (`exportForSideStore`): produces a valid signed IPA
 //    file in the Files-visible `Documents/SideStoreExports` folder, plus a
 //    `SideStoreGuide` (ordered steps as data) explaining the import.
@@ -96,8 +98,10 @@ public struct InstallationServerFile: Sendable, Equatable {
     }
 }
 
-/// The local install server. `start` binds localhost, serves the given
-/// files, and returns the base URL (e.g. `http://127.0.0.1:5231`).
+/// The local install server. `start` binds all interfaces (0.0.0.0),
+/// serves the given files, and returns the base URL (e.g.
+/// `http://192.168.1.5:5231` on the LAN, `http://127.0.0.1:5231`
+/// when no LAN address exists).
 /// `serve` adds one more file to a running server. `stop` shuts it down.
 public protocol InstallationServerProtocol: AnyObject, Sendable {
     var isRunning: Bool { get }
