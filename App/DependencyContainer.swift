@@ -27,6 +27,8 @@ public final class DependencyContainer {
     public var certificateEngine: CertificateEngineProtocol
     public var machOEngine: MachOEngineProtocol
     public var downloadEngine: DownloadEngine
+    public var verificationEngine: VerificationEngine
+    public var installationEngine: InstallationEngine
 
     public init(
         configuration: AppConfiguration = .fromBundle(),
@@ -40,7 +42,9 @@ public final class DependencyContainer {
         signingEngine: SigningEngineProtocol? = nil,
         certificateEngine: CertificateEngineProtocol? = nil,
         machOEngine: MachOEngineProtocol? = nil,
-        downloadEngine: DownloadEngine? = nil
+        downloadEngine: DownloadEngine? = nil,
+        verificationEngine: VerificationEngine? = nil,
+        installationEngine: InstallationEngine? = nil
     ) {
         self.configuration = configuration
         self.persistence = persistence
@@ -53,6 +57,8 @@ public final class DependencyContainer {
         self.certificateEngine = certificateEngine ?? CertificateEngine(keychain: keychain, fileManager: files)
         self.machOEngine = machOEngine ?? MachOEngine()
         self.downloadEngine = downloadEngine ?? DownloadEngine()
+        self.verificationEngine = verificationEngine ?? VerificationEngine()
+        self.installationEngine = installationEngine ?? InstallationEngine(server: NIOInstallationServer())
         if let signingEngine {
             self.signingEngine = signingEngine
         } else {
@@ -106,6 +112,8 @@ public final class DependencyContainer {
     public func requireCertificateEngine() -> CertificateEngineProtocol { certificateEngine }
     public func requireMachOEngine() -> MachOEngineProtocol { machOEngine }
     public func requireDownloadEngine() -> DownloadEngine { downloadEngine }
+    public func requireVerificationEngine() -> VerificationEngine { verificationEngine }
+    public func requireInstallationEngine() -> InstallationEngine { installationEngine }
 
     // MARK: - Use-case factories
 

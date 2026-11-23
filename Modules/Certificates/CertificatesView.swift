@@ -18,6 +18,26 @@ final class CertificatesViewModel: ObservableObject {
     @Published var pendingP12URL: URL?
     @Published var p12Password = "" // Held in memory only; never logged, never written to disk.
 
+    private let container: DependencyContainer
+    private let certificateEngine: CertificateEngineProtocol
+    private let certificateRepository: CertificateRepository
+
+    /// - Parameters:
+    ///   - container: when nil, a fresh `DependencyContainer()` is built
+    ///     and its engine/repository are used (so no-arg construction in
+    ///     tests keeps working); the app passes the coordinator's
+    ///     container.
+    init(
+        container: DependencyContainer? = nil,
+        certificateEngine: CertificateEngineProtocol? = nil,
+        certificateRepository: CertificateRepository? = nil
+    ) {
+        let container = container ?? DependencyContainer()
+        self.container = container
+        self.certificateEngine = certificateEngine ?? container.certificateEngine
+        self.certificateRepository = certificateRepository ?? container.certificateRepository
+    }
+
     func refresh() {
         isLoading = true
         defer { isLoading = false }
@@ -39,7 +59,29 @@ final class CertificatesViewModel: ObservableObject {
             if FileManager.default.fileExists(atPath: dest.path) { try FileManager.default.removeItem(at: dest) }
             try FileManager.default.copyItem(at: url, to: dest)
             refresh()
-        } catch { errorMessage = error.localizedDescription }
+        } catch { errorMessage = error.localizedDescription; return }
+        // A P12 imported with its password is also REGISTERED: the
+        // engine parses it, stores the password in the Keychain and
+        // returns the model, which is saved in the certificate
+        // repository. Without this the signing flow cannot resolve the
+        // certificate (it looks it up by id in the repository) and
+        // refuses to sign. The engine copies the file to its own
+        // stored location (<base>-<id>.p12) in the same folder, so the
+        // plain copy above is removed afterwards.
+        if dest.pathExtension.lowercased() == "p12", !p12Password.isEmpty {
+            let password = p12Password
+            p12Password = ""
+            Task {
+                do {
+                    let model = try await certificateEngine.importP12(at: dest, password: password)
+                    try await certificateRepository.save(model)
+                    try? FileManager.default.removeItem(at: dest)
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
+                refresh()
+            }
+        }
     }
 
     func delete(_ cert: StoredCertificate) {
@@ -47,6 +89,19 @@ final class CertificatesViewModel: ObservableObject {
             try FileManager.default.removeItem(at: cert.url)
             refresh()
         } catch { errorMessage = error.localizedDescription }
+        // Also drop the repository record (and its Keychain password)
+        // when the deleted file was a registered certificate, so a
+        // stale record can never make signing pick a missing identity.
+        Task {
+            let records = (try? await certificateRepository.fetchAll()) ?? []
+            if let match = records.first(where: { $0.fileURL == cert.url }) {
+                try? await certificateRepository.delete(id: match.id)
+                if let account = match.keychainAccount {
+                    try? container.keychain.delete(account: account)
+                }
+            }
+            refresh()
+        }
     }
 
     /// Validates a P12 with the in-memory password via SecPKCS12Import. Password is never stored.
@@ -65,11 +120,17 @@ final class CertificatesViewModel: ObservableObject {
 }
 
 struct CertificatesView: View {
-    @StateObject private var viewModel = CertificatesViewModel()
+    @StateObject private var viewModel: CertificatesViewModel
     @State private var certToDelete: StoredCertificate?
     @State private var selectedCert: StoredCertificate?
     @State private var showPasswordSheet = false
     @State private var validationResult: String?
+
+    /// - Parameter container: the app's container (from the
+    ///   coordinator); nil builds a fresh one (tests / previews).
+    init(container: DependencyContainer? = nil) {
+        _viewModel = StateObject(wrappedValue: CertificatesViewModel(container: container))
+    }
 
     var body: some View {
         NavigationStack {

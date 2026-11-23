@@ -11,6 +11,12 @@ SPM packages (pinned as upToNextMajor — resolved by Xcode on macOS):
   SWCompression  https://github.com/tsolomko/SWCompression  (MIT)
   swift-nio      https://github.com/apple/swift-nio          (Apache-2.0)
   swift-crypto   https://github.com/apple/swift-crypto       (Apache-2.0)
+  OpenSSL        https://github.com/krzyzanowskim/OpenSSL-Package
+                 (OpenSSL license; prebuilt XCFramework for iOS arm64 +
+                 simulator — provides the <openssl/...> headers and
+                 libcrypto/libssl that the vendored zsign C++ sources
+                 need. The C++ files live in Engines/SigningEngine/zsign
+                 and are compiled into the app target; see collect().)
 
 Usage: python3 Scripts/generate_project.py   (run from the repo root)
 Requires: Python 3 only. No Xcode needed to generate the file.
@@ -30,6 +36,7 @@ SPM = [
     ("https://github.com/apple/swift-nio", "2.0.0", "NIO", "swift-nio"),
     ("https://github.com/apple/swift-nio", "2.0.0", "NIOHTTP1", "swift-nio"),
     ("https://github.com/apple/swift-crypto", "3.0.0", "Crypto", "swift-crypto"),
+    ("https://github.com/krzyzanowskim/OpenSSL-Package", "3.6.5000", "OpenSSL", "OpenSSL-Package"),
 ]
 
 # source dirs -> target
@@ -45,6 +52,12 @@ def stable_id(text):
 
 def collect():
     app_sources, app_resources, test_sources, uitest_sources, app_headers = [], [], [], [], []
+    # C/C++ sources (the vendored zsign library + its bridge shim) are
+    # compiled into the app target alongside the Swift files. They live
+    # under Engines/SigningEngine/zsign/ and are picked up here, not by
+    # the Swift walk, so their header search paths are set in
+    # common_app below.
+    app_cpp_sources = []
     for d in APP_DIRS:
         base = os.path.join(ROOT, d)
         for dirpath, _dirs, files in os.walk(base):
@@ -52,6 +65,8 @@ def collect():
                 rel = os.path.relpath(os.path.join(dirpath, f), ROOT)
                 if f.endswith(".swift"):
                     app_sources.append(rel)
+                elif f.endswith((".cpp", ".c", ".cc", ".mm")):
+                    app_cpp_sources.append(rel)
                 elif f.endswith(".h"):
                     app_headers.append(rel)
                 elif any(rel.endswith(e) for e in RESOURCE_EXTS):
@@ -94,7 +109,7 @@ def collect():
             (uitest_sources if "UITests" in rel else test_sources).append(rel)
     return (sorted(set(app_sources)), sorted(set(app_resources)),
             sorted(test_sources), sorted(uitest_sources),
-            sorted(set(app_headers)))
+            sorted(set(app_headers)), sorted(set(app_cpp_sources)))
 
 
 def esc(s):
@@ -102,8 +117,8 @@ def esc(s):
 
 
 def main():
-    app_src, app_res, test_src, ui_src, app_headers = collect()
-    print(f"app sources: {len(app_src)}, resources: {len(app_res)}, "
+    app_src, app_res, test_src, ui_src, app_headers, app_cpp = collect()
+    print(f"app sources: {len(app_src)}, c/c++ sources: {len(app_cpp)}, resources: {len(app_res)}, "
           f"unit tests: {len(test_src)}, UI tests: {len(ui_src)}, "
           f"headers/other refs: {len(app_headers)}")
     if not app_src:
@@ -128,6 +143,12 @@ def main():
         if last_type is None:
             if rel.endswith(".swift"):
                 last_type = "sourcecode.swift"
+            elif rel.endswith(".cpp"):
+                last_type = "sourcecode.cpp.cpp"
+            elif rel.endswith(".c"):
+                last_type = "sourcecode.c.c"
+            elif rel.endswith(".mm"):
+                last_type = "sourcecode.cpp.objcpp"
             elif rel.endswith(".xcassets"):
                 last_type = "folder.assetcatalog"
             elif rel.endswith(".storyboard"):
@@ -155,6 +176,11 @@ def main():
 
     src_build, res_build = [], []
     for rel in app_src:
+        _f, b = add_file(rel)
+        src_build.append(b)
+    # C/C++ files are compiled into the app target's Sources phase just
+    # like the Swift files (they implement the zsign bridge).
+    for rel in app_cpp:
         _f, b = add_file(rel)
         src_build.append(b)
     for rel in app_headers:
@@ -196,7 +222,7 @@ def main():
         return stable_id("group:" + path)
 
     groups = []
-    all_files = app_src + app_res + test_src + ui_src + app_headers
+    all_files = app_src + app_cpp + app_res + test_src + ui_src + app_headers
     # Every directory that contains files AND every ancestor of such a
     # directory needs a PBXGroup. A top-level dir like Core/ or Tests/
     # that holds only subdirectories still gets referenced as a child
@@ -385,6 +411,20 @@ def main():
         "SDKROOT": "iphoneos",
         "SWIFT_OBJC_BRIDGING_HEADER": "Engines/SigningEngine/ZsignBridge.h",
         "SWIFT_VERSION": "5.0",
+        # The vendored zsign C++ sources build with -std=c++11 upstream
+        # (see research/references/zsign/build/macos/Makefile); keep
+        # that standard for the app target, which is the only target
+        # compiling C++ here.
+        "CLANG_CXX_LANGUAGE_STANDARD": '"c++11"',
+        # zsign's quoted includes ("common.h", "minizip/zip.h",
+        # "zlib.h") resolve through these directories; <openssl/...>
+        # comes from the OpenSSL-Package XCFramework linked below.
+        "HEADER_SEARCH_PATHS": '"$(inherited) $(SRCROOT)/Engines/SigningEngine/zsign $(SRCROOT)/Engines/SigningEngine/zsign/common $(SRCROOT)/Engines/SigningEngine/zsign/third-party $(SRCROOT)/Engines/SigningEngine/zsign/third-party/zlib"',
+        # minizip (used by zsign's Zip::Archive/Extract) calls zlib,
+        # but only its headers are vendored — the implementation is the
+        # system libz that ships in the iOS SDK, so the 1.3 MB of
+        # vendored zlib sources are not in the repo.
+        "OTHER_LDFLAGS": '"$(inherited) -lz"',
         "SWIFT_STRICT_CONCURRENCY": "complete",
         "TARGETED_DEVICE_FAMILY": '"1,2"',
     }

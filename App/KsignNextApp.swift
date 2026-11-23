@@ -15,6 +15,7 @@ struct KsignNextApp: App {
                 .preferredColorScheme(colorScheme)
                 .environment(\.locale, Locale(identifier: language == "ar" ? "ar" : "en"))
                 .onOpenURL { url in coordinator.handleOpenURL(url) }
+                .task { await coordinator.loadPersistence() }
         }
     }
 
@@ -38,10 +39,10 @@ private struct RootTabView: View {
             ApplicationsView()
                 .tabItem { Label(NSLocalizedString("tab.applications", comment: ""), systemImage: "app.badge") }
                 .tag(AppTab.applications)
-            CertificatesView()
+            CertificatesView(container: coordinator.container)
                 .tabItem { Label(NSLocalizedString("tab.certificates", comment: ""), systemImage: "key.fill") }
                 .tag(AppTab.certificates)
-            SigningCenterView()
+            SigningCenterView(container: coordinator.container)
                 .tabItem { Label(NSLocalizedString("tab.signing", comment: ""), systemImage: "signature") }
                 .tag(AppTab.signing)
             DownloadsView()

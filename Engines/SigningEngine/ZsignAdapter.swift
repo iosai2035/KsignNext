@@ -117,12 +117,83 @@ public struct UnavailableZsignBackend: ZsignBackend, Sendable {
     }
 }
 
-// MARK: - Wiring note
+// MARK: - Real backend (zsign, linked at build time)
 
-/// The real backend is provided by the build: implement `ZsignBackend`
-/// against the C functions in ZsignBridge.h (linked from the
-/// MIT-licensed zsign library at build time) and pass it to
-/// `ZsignAdapter(backend:)`. No C function is called from Swift here,
-/// so this file compiles with or without the zsign dependency linked;
-/// with only `UnavailableZsignBackend` wired in, every signing call
-/// fails loudly instead of silently doing nothing.
+/// `ZsignBackend` implemented against the C functions in ZsignBridge.h,
+/// which are defined by `zsign/zsign_bridge.cpp` on top of the vendored
+/// MIT-licensed zsign library. This is the backend the app uses: with it
+/// wired in, signing, injection and dylib-path changes really run.
+/// The C functions are synchronous and copy every string they are given,
+/// so passing Swift strings as C strings is safe for the call duration.
+public struct ZsignBridgeBackend: ZsignBackend, Sendable {
+    public init() {}
+
+    private static func cString(_ value: String?) -> UnsafePointer<CChar>? {
+        guard let value else { return nil }
+        return (value as NSString).utf8String
+    }
+
+    public func sign(
+        appPath: String,
+        provisionPath: String?,
+        p12Path: String?,
+        p12Password: String?,
+        entitlementsPath: String?,
+        bundleIdentifier: String?,
+        bundleName: String?,
+        bundleVersion: String?,
+        adhoc: Bool
+    ) async throws {
+        let code = ksignnext_zsign_sign(
+            Self.cString(appPath),
+            Self.cString(provisionPath),
+            Self.cString(p12Path),
+            Self.cString(p12Password),
+            Self.cString(entitlementsPath),
+            Self.cString(bundleIdentifier),
+            Self.cString(bundleName),
+            Self.cString(bundleVersion),
+            adhoc ? 1 : 0
+        )
+        guard code == 0 else {
+            throw SigningError.signingFailed(
+                reason: "zsign failed (code \(code)) while signing \(appPath).")
+        }
+    }
+
+    public func removeDylibs(appExecutable: String, dylibNames: [String]) async throws {
+        let cNames: [UnsafePointer<CChar>?] = dylibNames.map { Self.cString($0) }
+        let code = cNames.withUnsafeBufferPointer { buffer in
+            ksignnext_zsign_remove_dylibs(
+                Self.cString(appExecutable),
+                buffer.baseAddress,
+                Int32(dylibNames.count)
+            )
+        }
+        guard code == 0 else {
+            throw SigningError.signingFailed(
+                reason: "zsign failed (code \(code)) while removing dylibs from \(appExecutable).")
+        }
+    }
+
+    public func injectDylib(appExecutable: String, dylibPath: String) async throws {
+        let code = ksignnext_zsign_inject_dylib(
+            Self.cString(appExecutable), Self.cString(dylibPath))
+        guard code == 0 else {
+            throw SigningError.signingFailed(
+                reason: "zsign failed (code \(code)) while injecting \(dylibPath) into \(appExecutable).")
+        }
+    }
+
+    public func changeDylibPath(appExecutable: String, oldPath: String, newPath: String) async throws {
+        let code = ksignnext_zsign_change_dylib_path(
+            Self.cString(appExecutable), Self.cString(oldPath), Self.cString(newPath))
+        guard code == 0 else {
+            let why = code == 4 ? "the old install name was not found"
+                : code == 5 ? "the new install name does not fit in the load command"
+                : "code \(code)"
+            throw SigningError.signingFailed(
+                reason: "Could not change dylib path in \(appExecutable) (\(why)).")
+        }
+    }
+}

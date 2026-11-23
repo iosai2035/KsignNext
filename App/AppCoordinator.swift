@@ -39,10 +39,30 @@ enum DeepLinkError: LocalizedError {
 /// Owns navigation state, deep links (ksign://) and incoming files.
 @MainActor
 final class AppCoordinator: ObservableObject {
+    /// The single dependency container for the app, created once at launch
+    /// and shared by every tab (the views receive it from here, so the
+    /// engines and use cases are built exactly once).
+    let container: DependencyContainer
+
+    init(container: DependencyContainer = DependencyContainer()) {
+        self.container = container
+    }
+
     @Published var selectedTab: AppTab = .dashboard
     @Published var pendingFileOpen: IncomingFile?
     @Published var showDeepLinkError = false
     @Published var deepLinkError: String?
+
+    /// Loads the Core Data stores once at launch. A failure is shown in
+    /// the existing error alert instead of crashing.
+    func loadPersistence() async {
+        do {
+            try await container.persistence.load()
+        } catch {
+            deepLinkError = error.localizedDescription
+            showDeepLinkError = true
+        }
+    }
 
     /// ksign://tab/applications  |  ksign://sign  |  ksign://open?file=...
     func handleOpenURL(_ url: URL) {

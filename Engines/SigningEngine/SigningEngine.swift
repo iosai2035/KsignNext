@@ -30,7 +30,7 @@ public actor SigningEngine: SigningEngineProtocol {
     private var cancelledOperations: Set<UUID> = []
 
     public init(
-        backend: any ZsignBackend = UnavailableZsignBackend(),
+        backend: any ZsignBackend = ZsignBridgeBackend(),
         certificateResolver: CertificateResolver? = nil,
         provisioningResolver: ProvisioningResolver? = nil,
         p12Password: String? = nil
@@ -188,7 +188,7 @@ public actor SigningEngine: SigningEngineProtocol {
             try await disinject(request: request, appURL: appURL)
 
             emit(.signing, 0.55, "Signing frameworks and app extensions…")
-            try await signNestedBundles(in: appURL, config: config, certificate: certificate)
+            try await signNestedBundles(in: appURL, config: config, certificate: certificate, profile: profile)
 
             emit(.signing, 0.70, "Signing the main app…")
             try await signMainApp(appURL: appURL, config: config, certificate: certificate, profile: profile)
@@ -319,10 +319,15 @@ public actor SigningEngine: SigningEngineProtocol {
 
     /// Signs frameworks and app extensions BEFORE the main app, so the
     /// main signature covers them. Per-file failures name the file,
-    /// the stage, and the reason.
-    private func signNestedBundles(in appURL: URL, config: SigningConfiguration, certificate: CertificateModel?) async throws {
+    /// the stage, and the reason. Nested targets are signed with the
+    /// SAME certificate and provisioning profile as the main app:
+    /// zsign's asset initialisation refuses a non-adhoc sign without
+    /// a provisioning profile (it needs the team id from it), so a nil
+    /// provision here would make every nested sign fail.
+    private func signNestedBundles(in appURL: URL, config: SigningConfiguration, certificate: CertificateModel?, profile: ProvisioningModel?) async throws {
         let adhoc = config.doAdhocSigning
         let p12Path = certificate?.fileURL?.path
+        let provisionPath: String? = adhoc ? nil : profile?.fileURL?.path
         var targets: [URL] = []
         let plugIns = appURL.appendingPathComponent("PlugIns", isDirectory: true)
         if let extensions = try? fileManager.contentsOfDirectory(at: plugIns, includingPropertiesForKeys: nil) {
@@ -347,7 +352,7 @@ public actor SigningEngine: SigningEngineProtocol {
             do {
                 try await adapter.sign(
                     appPath: target.path,
-                    provisionPath: nil,
+                    provisionPath: provisionPath,
                     p12Path: p12Path,
                     p12Password: p12Password,
                     entitlementsPath: nil,
