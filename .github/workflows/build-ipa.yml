@@ -1,16 +1,11 @@
 # Ksign Next — build + test + IPA export on a macOS runner.
-# The user must create the repo iosai2035/KsignNext and push this project.
-# Signing: ExportOptions.plist uses method "development" with a placeholder
-# provisioning profile name. For a real signed IPA the user must either
-#  - add their own development provisioning profile + certificate to the
-#    runner (via GitHub Secrets, see README), or
-#  - change ExportOptions.plist `method` to "app-store-connect" /
-#    "ad-hoc" / "enterprise" and set the real profile name.
-# Until signing is configured, the `archive` step is expected to fail on
-# code signing — the workflow still runs the unit tests and the
-# project-generation check first, so a signing failure is reported
-# separately from a code failure. Do NOT put certificates, P12 files or
-# passwords in the repo.
+# Signing: the archive is built UNSIGNED (CODE_SIGNING_ALLOWED=NO) and
+# the IPA is packaged by hand from the archive, so it can be installed
+# with SideStore / AltStore, which re-signs it with a personal
+# certificate on the user's device. No Apple Developer Team ID,
+# certificate or provisioning profile is needed in CI, and none are
+# stored in the repo. Do NOT put certificates, P12 files or passwords
+# in the repo.
 name: Build IPA
 
 on:
@@ -58,9 +53,8 @@ jobs:
             -scheme KsignNext \
             -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
             -only-testing:KsignNextTests 2>&1 | tee build/test.log
-        continue-on-error: true
 
-      - name: Archive (Release)
+      - name: Archive (Release, unsigned for SideStore)
         run: |
           mkdir -p build
           xcodebuild archive \
@@ -69,20 +63,16 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath build/KsignNext.xcarchive \
-            CODE_SIGN_STYLE=Automatic \
-            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" 2>&1 | tee build/archive.log
-        continue-on-error: true
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/archive.log
 
-      - name: Export IPA
-        if: success() || failure()
+      - name: Export IPA (unsigned, for SideStore re-signing)
         run: |
           if [ -d build/KsignNext.xcarchive ]; then
-            xcodebuild -exportArchive \
-              -archivePath build/KsignNext.xcarchive \
-              -exportPath build/Export \
-              -exportOptionsPlist ExportOptions.plist 2>&1 | tee build/export.log
+            mkdir -p build/Export/Payload
+            cp -R build/KsignNext.xcarchive/Products/Applications/KsignNext.app build/Export/Payload/
+            (cd build/Export && zip -r -q KsignNext.ipa Payload) 2>&1 | tee build/export.log
           else
-            echo "No archive produced — signing is not configured yet. See README."
+            echo "No archive produced."
             exit 1
           fi
 
