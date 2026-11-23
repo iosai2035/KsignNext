@@ -30,7 +30,7 @@ jobs:
       - name: Select Xcode 17
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: "17.0"
+          xcode-version: "26.2"
 
       - name: Show versions
         run: |
