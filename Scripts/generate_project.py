@@ -29,7 +29,6 @@ SPM = [
     ("https://github.com/tsolomko/SWCompression", "4.8.0", "SWCompression", "SWCompression"),
     ("https://github.com/apple/swift-nio", "2.0.0", "NIO", "swift-nio"),
     ("https://github.com/apple/swift-nio", "2.0.0", "NIOHTTP1", "swift-nio"),
-    ("https://github.com/apple/swift-nio", "2.0.0", "NIOSSL", "swift-nio-ssl"),
     ("https://github.com/apple/swift-crypto", "3.0.0", "Crypto", "swift-crypto"),
 ]
 

@@ -1,7 +1,6 @@
 import Foundation
 import NIO
 import NIOHTTP1
-import NIOSSL
 
 // MARK: - InstallationServer (SwiftNIO)
 //
@@ -10,9 +9,10 @@ import NIOSSL
 // DEPENDENCY: SwiftNIO is an SPM dependency declared in the Xcode project.
 // This file is the ONLY file in the installation engine that imports NIO;
 // the rest of the engine is guarded from it (see InstallationEngine.swift).
-// `NIOSSL` is imported so a future TLS listener can be added without
-// changing imports; the loopback install server intentionally uses plain
-// HTTP because it only ever binds 127.0.0.1.
+// The loopback install server intentionally uses plain HTTP because it
+// only ever binds 127.0.0.1. If a TLS listener is added later, add the
+// swift-nio-ssl package (apple/swift-nio-ssl) — NIOSSL is NOT part of
+// the swift-nio package, and declaring it there breaks SPM resolution.
 //
 // BEHAVIOUR:
 // * Binds a random port in 4000-8000 on 127.0.0.1 (localhost) only.
