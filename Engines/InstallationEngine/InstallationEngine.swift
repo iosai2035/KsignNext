@@ -225,7 +225,7 @@ public final class InstallationEngine: @unchecked Sendable {
         title: String,
         displayImageURL: URL? = nil,
         fullSizeImageURL: URL? = nil,
-        timeout: TimeInterval = Self.defaultServerTimeout
+        timeout: TimeInterval = InstallationEngine.defaultServerTimeout
     ) async throws -> InstallationSession {
         _ = try Self.validateIPA(at: ipaURL)
         guard !bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

@@ -335,7 +335,7 @@ public actor DownloadEngine {
     private var taskIdentifierToID: [Int: UUID] = [:]
     private var updateContinuations: [UUID: AsyncStream<[DownloadTask]>.Continuation] = [:]
     private var lastPublishedAt = Date.distantPast
-    private var lastFileRemovalError: String?
+    private var lastFileRemovalErrorMessage: String?
 
     private let session: URLSession
     private let delegate: DownloadSessionDelegate
@@ -503,7 +503,7 @@ public actor DownloadEngine {
             do {
                 try FileManager.default.removeItem(at: fileURL)
             } catch {
-                lastFileRemovalError = error.localizedDescription
+                lastFileRemovalErrorMessage = error.localizedDescription
                 throw DownloadError.underlying("Could not delete \(fileURL.lastPathComponent): \(error.localizedDescription)")
             }
         }
@@ -513,7 +513,7 @@ public actor DownloadEngine {
 
     /// The last file-deletion error, if `removeTask` failed to delete a file.
     public func lastFileRemovalError() -> String? {
-        lastFileRemovalError
+        lastFileRemovalErrorMessage
     }
 
     // MARK: Observation
