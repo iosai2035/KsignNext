@@ -115,7 +115,12 @@ public enum ZipCompression {
 
         var output = Data()
         output.reserveCapacity(min(expectedSize, 16 * 1024 * 1024))
-        var stream = compression_stream(dst_ptr: nil, dst_size: 0, src_ptr: nil, src_size: 0, state: nil)
+        // The SDK's memberwise init takes non-optional pointers, so the
+        // stream starts pointed at a dummy byte with zero sizes; the real
+        // pointers are assigned before every `compression_stream_process`
+        // call below, and `compression_stream_init` never dereferences them.
+        var dummyByte: UInt8 = 0
+        var stream = compression_stream(dst_ptr: &dummyByte, dst_size: 0, src_ptr: &dummyByte, src_size: 0, state: nil)
         guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else {
             throw IPAError.corruptZIP("Failed to initialise deflate decoder.")
         }
