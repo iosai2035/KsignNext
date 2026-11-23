@@ -148,9 +148,9 @@ public enum ZipCompression {
                     // supplied up front, so the decoder may finish the
                     // stream. (It is a `compression_stream_process` flag,
                     // not a field of `compression_stream`. In this SDK the
-                    // constant is a `compression_stream_flags` value, so its
-                    // raw value is passed to the C function.)
-                    status = compression_stream_process(&stream, COMPRESSION_STREAM_FINALIZE.rawValue)
+                    // constant is a `compression_stream_flags` value whose
+                    // raw value is UInt32, while the C function takes Int32.)
+                    status = compression_stream_process(&stream, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
                     let produced = chunkSize - stream.dst_size
                     if produced > 0 {
                         if output.count + produced > expectedSize {
