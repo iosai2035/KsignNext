@@ -303,16 +303,33 @@ def main():
     ui_target = stable_id("target:ui")
     app_pkg_deps = [stable_id("pkgdep:" + product)
                     for _url, _ver, product, _pkg in SPM]
+    # Target dependencies: the test targets must declare a dependency
+    # on the app target, or `xcodebuild test` never builds the app
+    # module first and every `@testable import KsignNext` fails with
+    # "Unable to find module dependency: 'KsignNext'" (verified live in
+    # CI run 13, 2026-11-23). Format mirrors the real Ksign project:
+    # PBXTargetDependency + PBXContainerItemProxy (proxyType 1).
+    for tname in ("test", "ui"):
+        dep_id = stable_id(f"targetdep:{tname}")
+        proxy_id = stable_id(f"targetproxy:{tname}")
+        a(f'\t\t{dep_id} /* PBXTargetDependency */ = {{isa = PBXTargetDependency; '
+          f'target = {app_target} /* KsignNext */; '
+          f'targetProxy = {proxy_id} /* PBXContainerItemProxy */; }};')
+        a(f'\t\t{proxy_id} /* PBXContainerItemProxy */ = {{isa = PBXContainerItemProxy; '
+          f'containerPortal = {stable_id("project")} /* Project object */; proxyType = 1; '
+          f'remoteGlobalIDString = {app_target}; remoteInfo = KsignNext; }};')
     target(app_target, "KsignNext", "KsignNext.app",
            "com.apple.product-type.application",
            [app_src_phase, app_fw_phase, app_res_phase],
            pkg_deps=app_pkg_deps)
     target(test_target, "KsignNextTests", "KsignNextTests.xctest",
            "com.apple.product-type.bundle.unit-test",
-           [test_src_phase, test_fw_phase])
+           [test_src_phase, test_fw_phase],
+           deps=(stable_id("targetdep:test"),))
     target(ui_target, "KsignNextUITests", "KsignNextUITests.xctest",
            "com.apple.product-type.bundle.ui-testing",
-           [ui_src_phase, ui_fw_phase])
+           [ui_src_phase, ui_fw_phase],
+           deps=(stable_id("targetdep:ui"),))
 
     # Project
     proj_id = stable_id("project")
@@ -373,6 +390,9 @@ def main():
     }
     for cfg, extra in (("Debug", {"CODE_SIGN_IDENTITY": '"Apple Development"',
                                   "DEBUG_INFORMATION_FORMAT": "dwarf",
+                                  # @testable import needs the app module
+                                  # built with testability enabled.
+                                  "ENABLE_TESTABILITY": "YES",
                                   "SWIFT_OPTIMIZATION_LEVEL": '"-Onone"'}),
                        ("Release", {"CODE_SIGN_IDENTITY": '"Apple Distribution"',
                                     "COPY_PHASE_STRIP": "NO",
@@ -385,6 +405,7 @@ def main():
         config(stable_id(f"cfg:test:{cfg}"), cfg, {
             "BUNDLE_LOADER": '"$(TEST_HOST)"',
             "CODE_SIGN_STYLE": "Automatic",
+            "ENABLE_TESTABILITY": "YES",
             "INFOPLIST_FILE": "Tests/Info.plist",
             "IPHONEOS_DEPLOYMENT_TARGET": "16.0",
             "LD_RUNPATH_SEARCH_PATHS": '"$(inherited) @executable_path/Frameworks @loader_path/Frameworks"',
@@ -397,6 +418,7 @@ def main():
         })
         config(stable_id(f"cfg:ui:{cfg}"), cfg, {
             "CODE_SIGN_STYLE": "Automatic",
+            "ENABLE_TESTABILITY": "YES",
             "INFOPLIST_FILE": "Tests/Info.plist",
             "IPHONEOS_DEPLOYMENT_TARGET": "16.0",
             "PRODUCT_BUNDLE_IDENTIFIER": BUNDLE_ID + ".uitests",
