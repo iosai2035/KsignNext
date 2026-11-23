@@ -140,14 +140,15 @@ public enum ZipCompression {
                 }
                 stream.src_ptr = inputBase
                 stream.src_size = input.count
-                // COMPRESSION_STREAM_FINALIZE (value 1): the whole input is
-                // supplied up front, so the decoder may finish the stream.
-                stream.flags = 1
                 var status: compression_status = COMPRESSION_STATUS_OK
                 while status != COMPRESSION_STATUS_END {
                     stream.dst_ptr = outputBase
                     stream.dst_size = chunkSize
-                    status = compression_stream_process(&stream, 0)
+                    // COMPRESSION_STREAM_FINALIZE: the whole input was
+                    // supplied up front, so the decoder may finish the
+                    // stream. (It is a `compression_stream_process` flag,
+                    // not a field of `compression_stream`.)
+                    status = compression_stream_process(&stream, COMPRESSION_STREAM_FINALIZE)
                     let produced = chunkSize - stream.dst_size
                     if produced > 0 {
                         if output.count + produced > expectedSize {
