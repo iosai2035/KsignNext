@@ -34,7 +34,9 @@ final class InstallationViewModel: ObservableObject {
             let listener = try NWListener(using: params, on: endpointPort)
             self.listener = listener
             listener.newConnectionHandler = { [weak self] connection in
-                self?.handle(connection: connection)
+                Task { @MainActor in
+                    self?.handle(connection: connection)
+                }
             }
             listener.stateUpdateHandler = { [weak self] state in
                 Task { @MainActor in

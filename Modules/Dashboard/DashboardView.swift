@@ -160,7 +160,7 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(NSLocalizedString("dashboard.recent", comment: "")).font(.headline)
             if viewModel.recentActivity.isEmpty {
-                ContentUnavailableView(
+                EmptyStateView(
                     NSLocalizedString("dashboard.recent.empty", comment: ""),
                     systemImage: "clock",
                     description: Text(NSLocalizedString("dashboard.recent.empty.detail", comment: ""))

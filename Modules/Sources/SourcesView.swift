@@ -8,7 +8,7 @@ struct SourceListingApp: Identifiable, Equatable {
     var downloadURLString: String
 }
 
-struct SourceItem: Identifiable, Equatable, Codable {
+struct SourceItem: Identifiable, Equatable, Codable, Hashable {
     let id: UUID
     var name: String
     var urlString: String
@@ -116,7 +116,7 @@ struct SourcesView: View {
                 }
                 .frame(maxHeight: 220)
                 if viewModel.sources.isEmpty {
-                    ContentUnavailableView(
+                    EmptyStateView(
                         NSLocalizedString("sources.empty", comment: ""),
                         systemImage: "globe",
                         description: Text(NSLocalizedString("sources.empty.detail", comment: ""))

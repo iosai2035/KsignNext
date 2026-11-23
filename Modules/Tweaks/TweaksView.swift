@@ -92,39 +92,9 @@ struct TweaksView: View {
                 .accessibilityIdentifier("tweaks.stockWarning")
 
                 if viewModel.tweaks.isEmpty {
-                    ContentUnavailableView(
-                        NSLocalizedString("tweaks.empty", comment: ""),
-                        systemImage: "wrench.and.screwdriver",
-                        description: Text(NSLocalizedString("tweaks.empty.detail", comment: ""))
-                    ) {
-                        Button(NSLocalizedString("tweaks.import", comment: "")) { viewModel.showImporter = true }
-                            .buttonStyle(.borderedProminent)
-                            .accessibilityIdentifier("tweaks.import.empty")
-                    }
+                    emptyState
                 } else {
-                    ForEach(viewModel.tweaks) { tweak in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text(tweak.name).lineLimit(1)
-                                Spacer()
-                                Text(tweak.kind.uppercased()).font(.caption).foregroundStyle(.secondary)
-                            }
-                            if let result = viewModel.analysis[tweak.id] {
-                                Text(result.summary).font(.caption).foregroundStyle(.secondary)
-                                if !result.dependencies.isEmpty { Text(result.dependencies.joined(separator: ", ")).font(.caption) }
-                                if !result.conflicts.isEmpty { Text(result.conflicts.joined(separator: ", ")).font(.caption).foregroundStyle(.red) }
-                            }
-                            HStack {
-                                Button(NSLocalizedString("tweaks.analyse", comment: "")) { viewModel.analyse(tweak) }
-                                    .accessibilityIdentifier("tweaks.analyse.\(tweak.name)")
-                                Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) { tweakToDelete = tweak }
-                            }
-                            .font(.caption)
-                        }
-                    }
-                    Section(NSLocalizedString("tweaks.plan.title", comment: "")) {
-                        Text(viewModel.injectionPlan).font(.caption.monospaced())
-                    }
+                    tweaksList
                 }
             }
             .navigationTitle(NSLocalizedString("tab.tweaks", comment: ""))
@@ -151,6 +121,48 @@ struct TweaksView: View {
             .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: Binding(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil } })) {
                 Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
             } message: { Text(viewModel.errorMessage ?? "") }
+        }
+    }
+
+    // Branches extracted so the type checker does not have to infer the
+    // whole body as one expression (it timed out on the combined form).
+    private var emptyState: some View {
+        EmptyStateView(
+            NSLocalizedString("tweaks.empty", comment: ""),
+            systemImage: "wrench.and.screwdriver",
+            description: Text(NSLocalizedString("tweaks.empty.detail", comment: ""))
+        ) {
+            Button(NSLocalizedString("tweaks.import", comment: "")) { viewModel.showImporter = true }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("tweaks.import.empty")
+        }
+    }
+
+    private var tweaksList: some View {
+        Group {
+            ForEach(viewModel.tweaks) { tweak in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(tweak.name).lineLimit(1)
+                        Spacer()
+                        Text(tweak.kind.uppercased()).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let result = viewModel.analysis[tweak.id] {
+                        Text(result.summary).font(.caption).foregroundStyle(.secondary)
+                        if !result.dependencies.isEmpty { Text(result.dependencies.joined(separator: ", ")).font(.caption) }
+                        if !result.conflicts.isEmpty { Text(result.conflicts.joined(separator: ", ")).font(.caption).foregroundStyle(.red) }
+                    }
+                    HStack {
+                        Button(NSLocalizedString("tweaks.analyse", comment: "")) { viewModel.analyse(tweak) }
+                            .accessibilityIdentifier("tweaks.analyse.\(tweak.name)")
+                        Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) { tweakToDelete = tweak }
+                    }
+                    .font(.caption)
+                }
+            }
+            Section(NSLocalizedString("tweaks.plan.title", comment: "")) {
+                Text(viewModel.injectionPlan).font(.caption.monospaced())
+            }
         }
     }
 }

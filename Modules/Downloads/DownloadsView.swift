@@ -141,7 +141,7 @@ struct DownloadsView: View {
                 }
                 .padding()
                 if viewModel.downloads.isEmpty {
-                    ContentUnavailableView(
+                    EmptyStateView(
                         NSLocalizedString("downloads.empty", comment: ""),
                         systemImage: "arrow.down.circle",
                         description: Text(NSLocalizedString("downloads.empty.detail", comment: ""))

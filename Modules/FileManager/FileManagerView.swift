@@ -110,7 +110,7 @@ struct FileManagerView: View {
         NavigationStack {
             Group {
                 if viewModel.filteredFiles.isEmpty {
-                    ContentUnavailableView(
+                    EmptyStateView(
                         NSLocalizedString("files.empty", comment: ""),
                         systemImage: "folder",
                         description: Text(NSLocalizedString("files.empty.detail", comment: ""))

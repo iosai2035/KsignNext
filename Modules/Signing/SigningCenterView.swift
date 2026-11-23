@@ -318,7 +318,7 @@ struct SigningCenterView: View {
         NavigationStack {
             List {
                 if items.isEmpty {
-                    ContentUnavailableView(title, systemImage: "tray", description: Text(NSLocalizedString("common.no.items", comment: "")))
+                    EmptyStateView(title, systemImage: "tray", description: Text(NSLocalizedString("common.no.items", comment: "")))
                 } else {
                     ForEach(items, id: \.self) { item in
                         Button(item) { onPick(item) }

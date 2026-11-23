@@ -1,7 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct StoredApp: Identifiable, Equatable {
+struct StoredApp: Identifiable, Equatable, Hashable {
     let id = UUID()
     let url: URL
     var name: String { url.deletingPathExtension().lastPathComponent }
@@ -91,7 +91,7 @@ struct ApplicationsView: View {
                 if viewModel.isLoading {
                     ProgressView(NSLocalizedString("common.loading", comment: "")).accessibilityIdentifier("apps.loading")
                 } else if viewModel.filteredApps.isEmpty {
-                    ContentUnavailableView(
+                    EmptyStateView(
                         NSLocalizedString("apps.empty", comment: ""),
                         systemImage: "app.badge",
                         description: Text(NSLocalizedString("apps.empty.detail", comment: ""))

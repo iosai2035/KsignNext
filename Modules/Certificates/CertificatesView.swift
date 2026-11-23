@@ -75,31 +75,9 @@ struct CertificatesView: View {
         NavigationStack {
             Group {
                 if viewModel.certificates.isEmpty {
-                    ContentUnavailableView(
-                        NSLocalizedString("certs.empty", comment: ""),
-                        systemImage: "key.fill",
-                        description: Text(NSLocalizedString("certs.empty.detail", comment: ""))
-                    ) {
-                        Button(NSLocalizedString("certs.import.p12", comment: "")) { viewModel.showP12Importer = true }
-                            .buttonStyle(.borderedProminent)
-                            .accessibilityIdentifier("certs.import.empty")
-                    }
+                    emptyState
                 } else {
-                    List(viewModel.certificates) { cert in
-                        Button { selectedCert = cert } label: {
-                            HStack {
-                                Image(systemName: cert.kind == "P12" ? "key.fill" : "doc.badge.gearshape")
-                                VStack(alignment: .leading) {
-                                    Text(cert.name).lineLimit(1)
-                                    Text(cert.kind).font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        .accessibilityIdentifier("certs.row.\(cert.name)")
-                        .swipeActions {
-                            Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) { certToDelete = cert }
-                        }
-                    }
+                    certificatesList
                 }
             }
             .navigationTitle(NSLocalizedString("tab.certificates", comment: ""))
@@ -139,6 +117,38 @@ struct CertificatesView: View {
                 Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
             } message: { Text(viewModel.errorMessage ?? "") }
             .navigationDestination(item: $selectedCert) { cert in CertificateDetailView(certificate: cert, onDeleted: { viewModel.refresh() }) }
+        }
+    }
+
+    // Branches extracted so the type checker does not have to infer the
+    // whole body as one expression (it timed out on the combined form).
+    private var emptyState: some View {
+        EmptyStateView(
+            NSLocalizedString("certs.empty", comment: ""),
+            systemImage: "key.fill",
+            description: Text(NSLocalizedString("certs.empty.detail", comment: ""))
+        ) {
+            Button(NSLocalizedString("certs.import.p12", comment: "")) { viewModel.showP12Importer = true }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("certs.import.empty")
+        }
+    }
+
+    private var certificatesList: some View {
+        List(viewModel.certificates) { cert in
+            Button { selectedCert = cert } label: {
+                HStack {
+                    Image(systemName: cert.kind == "P12" ? "key.fill" : "doc.badge.gearshape")
+                    VStack(alignment: .leading) {
+                        Text(cert.name).lineLimit(1)
+                        Text(cert.kind).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .accessibilityIdentifier("certs.row.\(cert.name)")
+            .swipeActions {
+                Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) { certToDelete = cert }
+            }
         }
     }
 

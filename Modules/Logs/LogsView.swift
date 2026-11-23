@@ -85,7 +85,7 @@ struct LogsView: View {
                 .pickerStyle(.segmented)
                 .padding()
                 if viewModel.filteredEntries.isEmpty {
-                    ContentUnavailableView(
+                    EmptyStateView(
                         NSLocalizedString("logs.empty", comment: ""),
                         systemImage: "list.bullet.rectangle",
                         description: Text(NSLocalizedString("logs.empty.detail", comment: ""))

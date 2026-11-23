@@ -35,7 +35,7 @@ struct SourceDetailView: View {
             if viewModel.isLoading {
                 ProgressView(NSLocalizedString("common.loading", comment: "")).accessibilityIdentifier("sourceDetail.loading")
             } else if viewModel.apps.isEmpty {
-                ContentUnavailableView(
+                EmptyStateView(
                     NSLocalizedString("sources.apps.empty", comment: ""),
                     systemImage: "app.badge",
                     description: Text(NSLocalizedString("sources.apps.empty.detail", comment: ""))

@@ -26,7 +26,7 @@ struct PlistEditorView: View {
             if viewModel.isLoading {
                 ProgressView(NSLocalizedString("common.loading", comment: ""))
             } else if viewModel.isEmpty {
-                ContentUnavailableView(
+                EmptyStateView(
                     NSLocalizedString("plist.empty", comment: ""),
                     systemImage: "list.bullet",
                     description: Text(NSLocalizedString("plist.empty.detail", comment: ""))
