@@ -30,9 +30,6 @@ final class InstallationViewModel: ObservableObject {
     /// itms-services URL. `.invalid` when no task is held.
     private var installBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
-    private let installationEngine: InstallationEngine
-    private let ipaEngine: IPAEngineProtocol
-
     /// - Parameters:
     ///   - installationEngine: nil builds `InstallationEngine(server:
     ///     NIOInstallationServer())`; the app passes the coordinator's
