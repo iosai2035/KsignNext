@@ -233,7 +233,6 @@
 "settings.storage.clear" = "مسح ذاكرة التخزين المؤقت";
 "settings.storage.clear.confirm" = "هل تريد مسح الملفات المخزنة مؤقتًا؟";
 "settings.section.downloads" = "التنزيلات";
-"settings.downloads.wifi" = "Wi-Fi فقط";
 "settings.downloads.concurrent" = "أقصى عدد للتنزيلات المتزامنة: %d";
 "settings.section.signing" = "التوقيع";
 "settings.signing.verify" = "التحقق بعد التوقيع";
@@ -276,3 +275,11 @@
 "install.otherdevice" = "ثبّت على جهاز آخر";
 "install.otherdevice.note" = "يحتاج واي فاي: الجهاز الآخر يفتح الرابط على نفس الشبكة.";
 "install.sidestore.wifi" = "SideStore نفسه يحتاج واي فاي للتثبيت.";
+"install.refresh" = "تجديد";
+"install.refreshing" = "جارٍ التجديد…";
+"install.refresh.installing" = "جارٍ تثبيت التطبيق المجدَّد…";
+"install.refresh.done" = "تم التجديد — جارٍ التثبيت الآن.";
+"install.expiry.days" = "تنتهي صلاحية التوقيع خلال %d أيام";
+"install.expiry.expired" = "انتهت صلاحية التوقيع — جدّد الآن";
+"install.expiry.unknown" = "تاريخ انتهاء التوقيع غير معروف";
+"install.refresh.error.nocontainer" = "التجديد غير متاح في هذا السياق.";

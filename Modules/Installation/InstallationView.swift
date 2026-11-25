@@ -21,7 +21,11 @@ final class InstallationViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var signedApps: [String] = []
     @Published var selectedApp = ""
+    @Published var signatureExpiryText: String?
+    @Published var isRefreshing = false
+    @Published var refreshStatus = ""
 
+    private let container: DependencyContainer?
     private let installationEngine: InstallationEngine
     private let ipaEngine: IPAEngineProtocol
 
@@ -30,15 +34,33 @@ final class InstallationViewModel: ObservableObject {
     /// itms-services URL. `.invalid` when no task is held.
     private var installBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
+    /// Refresh needs the container (signing use case, repositories,
+    /// provisioning engine). Nil in tests / previews, where the
+    /// refresh button is hidden.
+    var canRefresh: Bool { container != nil }
+
+    private var refreshUseCase: RefreshApplicationUseCase? {
+        guard let container else { return nil }
+        return RefreshApplicationUseCase(
+            signedRepository: container.signedApplicationRepository,
+            certificateRepository: container.certificateRepository,
+            provisioningEngine: ProvisioningEngine(keychain: container.keychain, fileManager: container.files),
+            ipaEngine: ipaEngine
+        )
+    }
+
     /// - Parameters:
-    ///   - installationEngine: nil builds `InstallationEngine(server:
-    ///     NIOInstallationServer())`; the app passes the coordinator's
-    ///     container engine.
-    ///   - ipaEngine: nil builds a plain `IPAEngine()`; used to read the
-    ///     selected IPA's bundle identifier / version / title.
-    init(installationEngine: InstallationEngine? = nil, ipaEngine: IPAEngineProtocol? = nil) {
-        self.installationEngine = installationEngine ?? InstallationEngine(server: NIOInstallationServer())
-        self.ipaEngine = ipaEngine ?? IPAEngine()
+    ///   - container: the app's container (from the coordinator); nil
+    ///     builds fresh engines (tests / previews) and disables refresh.
+    ///   - installationEngine: nil uses the container's engine, else a
+    ///     fresh `InstallationEngine(server: NIOInstallationServer())`.
+    ///   - ipaEngine: nil uses the container's engine, else a plain
+    ///     `IPAEngine()`; used to read the selected IPA's bundle
+    ///     identifier / version / title.
+    init(container: DependencyContainer? = nil, installationEngine: InstallationEngine? = nil, ipaEngine: IPAEngineProtocol? = nil) {
+        self.container = container
+        self.installationEngine = installationEngine ?? container?.installationEngine ?? InstallationEngine(server: NIOInstallationServer())
+        self.ipaEngine = ipaEngine ?? container?.ipaEngine ?? IPAEngine()
     }
 
     func refreshSignedApps() {
@@ -47,6 +69,74 @@ final class InstallationViewModel: ObservableObject {
         let items = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         signedApps = items.filter { $0.pathExtension.lowercased() == "ipa" }.map(\.lastPathComponent).sorted()
         if selectedApp.isEmpty { selectedApp = signedApps.first ?? "" }
+        Task { await loadSignatureExpiry() }
+    }
+
+    /// Reads the embedded provisioning profile of the selected signed
+    /// app and shows its expiry ("expires in N days" / "expired").
+    /// Nil text when there is no selected app, no container, or no
+    /// embedded profile (ad-hoc).
+    func loadSignatureExpiry() async {
+        guard !selectedApp.isEmpty,
+              let docs = Workspace.documents,
+              let refreshUseCase else {
+            signatureExpiryText = nil
+            return
+        }
+        let ipaURL = docs.appendingPathComponent("SignedApps/\(selectedApp)")
+        do {
+            guard let expiry = try await refreshUseCase.profileExpiration(signedIPAURL: ipaURL) else {
+                signatureExpiryText = NSLocalizedString("install.expiry.unknown", comment: "")
+                return
+            }
+            if expiry < Date() {
+                signatureExpiryText = NSLocalizedString("install.expiry.expired", comment: "")
+            } else {
+                let days = Calendar.current.dateComponents([.day], from: Date(), to: expiry).day ?? 0
+                signatureExpiryText = String(format: NSLocalizedString("install.expiry.days", comment: ""), days)
+            }
+        } catch {
+            signatureExpiryText = nil
+        }
+    }
+
+    /// Refreshes the selected signed app on this device, without Wi-Fi:
+    /// re-signs it with the same certificate and profile, then
+    /// installs the fresh file over loopback (cellular data is enough).
+    /// The profile must still be valid; an expired profile refuses
+    /// with a typed error (import a fresh profile, then sign again).
+    func refreshSelectedApp() async {
+        guard !selectedApp.isEmpty else {
+            errorMessage = NSLocalizedString("install.error.noapp", comment: ""); return
+        }
+        guard let docs = Workspace.documents else { return }
+        guard let container, let refreshUseCase else {
+            errorMessage = NSLocalizedString("install.refresh.error.nocontainer", comment: ""); return
+        }
+        let ipaURL = docs.appendingPathComponent("SignedApps/\(selectedApp)")
+        isRefreshing = true
+        refreshStatus = NSLocalizedString("install.refreshing", comment: "")
+        errorMessage = nil
+        defer { isRefreshing = false }
+        do {
+            let plan = try await refreshUseCase.plan(signedIPAURL: ipaURL)
+            let signUseCase = container.makeSignApplicationUseCase()
+            let result = try await signUseCase.execute(plan.request) { [weak self] progressEvent in
+                // The progress closure is @Sendable/nonisolated; hop
+                // back to the main actor to touch @Published state.
+                Task { @MainActor in
+                    self?.refreshStatus = progressEvent.message
+                }
+            }
+            refreshStatus = NSLocalizedString("install.refresh.installing", comment: "")
+            try await installFile(result.signedFileURL)
+            refreshStatus = NSLocalizedString("install.refresh.done", comment: "")
+            refreshSignedApps()
+            selectedApp = result.signedFileURL.lastPathComponent
+            await loadSignatureExpiry()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     /// Prepares an install for `destination` and shows its link.
@@ -88,23 +178,31 @@ final class InstallationViewModel: ObservableObject {
         guard let docs = Workspace.documents else { return }
         let ipaURL = docs.appendingPathComponent("SignedApps/\(selectedApp)")
         do {
-            let metadata = try await ipaEngine.readAppMetadata(at: ipaURL)
-            let session = try await installationEngine.prepareInstall(
-                ipaURL: ipaURL,
-                bundleIdentifier: metadata.bundleIdentifier,
-                bundleVersion: metadata.version,
-                title: metadata.bundleDisplayName ?? metadata.name,
-                destination: .thisDevice
-            )
-            isRunning = true
-            installURLString = session.installURL.absoluteString
+            try await installFile(ipaURL)
             errorMessage = nil
-            beginInstallBackgroundTask()
-            UIApplication.shared.open(session.installURL, options: [:], completionHandler: nil)
         } catch {
             isRunning = false
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Prepares a loopback install session for `ipaURL`, shows its link,
+    /// holds the background task, and opens the itms-services URL.
+    /// Shared by "Install on this device" and by refresh (which signs
+    /// a fresh file first, then installs it the same way).
+    private func installFile(_ ipaURL: URL) async throws {
+        let metadata = try await ipaEngine.readAppMetadata(at: ipaURL)
+        let session = try await installationEngine.prepareInstall(
+            ipaURL: ipaURL,
+            bundleIdentifier: metadata.bundleIdentifier,
+            bundleVersion: metadata.version,
+            title: metadata.bundleDisplayName ?? metadata.name,
+            destination: .thisDevice
+        )
+        isRunning = true
+        installURLString = session.installURL.absoluteString
+        beginInstallBackgroundTask()
+        UIApplication.shared.open(session.installURL, options: [:], completionHandler: nil)
     }
 
     func stopServer() async {
@@ -154,10 +252,7 @@ struct InstallationView: View {
     /// - Parameter container: the app's container (from the
     ///   coordinator); nil builds fresh engines (tests / previews).
     init(container: DependencyContainer? = nil) {
-        _viewModel = StateObject(wrappedValue: InstallationViewModel(
-            installationEngine: container?.installationEngine,
-            ipaEngine: container?.ipaEngine
-        ))
+        _viewModel = StateObject(wrappedValue: InstallationViewModel(container: container))
     }
 
     var body: some View {
@@ -193,6 +288,22 @@ struct InstallationView: View {
                     Text(NSLocalizedString("install.otherdevice.note", comment: ""))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if let expiry = viewModel.signatureExpiryText {
+                        Text(expiry)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("install.expiryText")
+                    }
+                    if viewModel.canRefresh {
+                        Button(NSLocalizedString("install.refresh", comment: "")) { Task { await viewModel.refreshSelectedApp() } }
+                            .buttonStyle(.bordered)
+                            .disabled(viewModel.isRefreshing || viewModel.selectedApp.isEmpty)
+                            .accessibilityIdentifier("install.refresh")
+                        if viewModel.isRefreshing {
+                            ProgressView(viewModel.refreshStatus)
+                                .accessibilityIdentifier("install.refreshProgress")
+                        }
+                    }
                 }
             }
             Section(NSLocalizedString("install.section.sidestore", comment: "")) {
@@ -217,6 +328,7 @@ struct InstallationView: View {
         }
         .navigationTitle(NSLocalizedString("tab.installation", comment: ""))
         .onAppear { viewModel.refreshSignedApps() }
+        .onChange(of: viewModel.selectedApp) { _ in Task { await viewModel.loadSignatureExpiry() } }
         .onDisappear { Task { if viewModel.isRunning { await viewModel.stopServer() } } }
     }
 }

@@ -39,7 +39,6 @@ final class SettingsViewModel: ObservableObject {
 struct SettingsView: View {
     @AppStorage("ksign.language") private var language = "en"
     @AppStorage("ksign.appearance") private var appearanceRaw = "system"
-    @AppStorage("ksign.downloads.wifiOnly") private var wifiOnly = true
     @AppStorage("ksign.downloads.maxConcurrent") private var maxConcurrent = 2
     @AppStorage("ksign.signing.verifyAfterSign") private var verifyAfterSign = true
     @AppStorage("ksign.signing.keepOriginal") private var keepOriginal = true
@@ -82,7 +81,6 @@ struct SettingsView: View {
                         .accessibilityIdentifier("settings.clearCache")
                 }
                 Section(NSLocalizedString("settings.section.downloads", comment: "")) {
-                    Toggle(NSLocalizedString("settings.downloads.wifi", comment: ""), isOn: $wifiOnly)
                     Stepper(value: $maxConcurrent, in: 1...5) {
                         Text(String(format: NSLocalizedString("settings.downloads.concurrent", comment: ""), maxConcurrent))
                     }
