@@ -1,9 +1,19 @@
 import SwiftUI
+import UIKit
 
 /// Local install server (InstallationEngine + NIO server, plain HTTP).
 /// Serves an itms-services manifest for a signed IPA in
 /// Documents/SignedApps. Start/stop go through the real engine; if the
 /// server fails to start, the error is shown — never reported as running.
+///
+/// Two install destinations:
+/// * **This device** — the server is advertised on loopback (127.0.0.1),
+///   so it works without Wi-Fi: on cellular data or with no network at
+///   all. Tapping it opens the itms-services URL right away, and a
+///   background task keeps the server alive while iOS downloads the IPA.
+/// * **Another device** — the server is advertised on the Wi-Fi (LAN)
+///   address; the other device opens the shown link on the same network.
+///   This one needs Wi-Fi, and fails with a clear error without it.
 @MainActor
 final class InstallationViewModel: ObservableObject {
     @Published var isRunning = false
@@ -11,6 +21,14 @@ final class InstallationViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var signedApps: [String] = []
     @Published var selectedApp = ""
+
+    private let installationEngine: InstallationEngine
+    private let ipaEngine: IPAEngineProtocol
+
+    /// Background task keeping the install server alive while iOS
+    /// downloads the IPA after the app is backgrounded by opening the
+    /// itms-services URL. `.invalid` when no task is held.
+    private var installBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
     private let installationEngine: InstallationEngine
     private let ipaEngine: IPAEngineProtocol
@@ -34,7 +52,10 @@ final class InstallationViewModel: ObservableObject {
         if selectedApp.isEmpty { selectedApp = signedApps.first ?? "" }
     }
 
-    func startServer() async {
+    /// Prepares an install for `destination` and shows its link.
+    /// `.thisDevice` (loopback) needs no Wi-Fi; `.anotherDevice` needs
+    /// the device on Wi-Fi and throws a clear error without it.
+    func startServer(destination: InstallDestination = .anotherDevice) async {
         guard !selectedApp.isEmpty else {
             errorMessage = NSLocalizedString("install.error.noapp", comment: ""); return
         }
@@ -46,7 +67,8 @@ final class InstallationViewModel: ObservableObject {
                 ipaURL: ipaURL,
                 bundleIdentifier: metadata.bundleIdentifier,
                 bundleVersion: metadata.version,
-                title: metadata.bundleDisplayName ?? metadata.name
+                title: metadata.bundleDisplayName ?? metadata.name,
+                destination: destination
             )
             isRunning = true
             installURLString = session.installURL.absoluteString
@@ -57,10 +79,66 @@ final class InstallationViewModel: ObservableObject {
         }
     }
 
+    /// Installs the selected signed app on this device, without Wi-Fi:
+    /// prepares a loopback session, holds a background task so the
+    /// server survives while iOS downloads the IPA, then opens the
+    /// itms-services URL. The link stays visible in the UI as a fallback
+    /// if opening it fails.
+    func installOnThisDevice() async {
+        guard !selectedApp.isEmpty else {
+            errorMessage = NSLocalizedString("install.error.noapp", comment: ""); return
+        }
+        guard let docs = Workspace.documents else { return }
+        let ipaURL = docs.appendingPathComponent("SignedApps/\(selectedApp)")
+        do {
+            let metadata = try await ipaEngine.readAppMetadata(at: ipaURL)
+            let session = try await installationEngine.prepareInstall(
+                ipaURL: ipaURL,
+                bundleIdentifier: metadata.bundleIdentifier,
+                bundleVersion: metadata.version,
+                title: metadata.bundleDisplayName ?? metadata.name,
+                destination: .thisDevice
+            )
+            isRunning = true
+            installURLString = session.installURL.absoluteString
+            errorMessage = nil
+            beginInstallBackgroundTask()
+            UIApplication.shared.open(session.installURL, options: [:], completionHandler: nil)
+        } catch {
+            isRunning = false
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func stopServer() async {
+        endInstallBackgroundTask()
         await installationEngine.stopServing()
         isRunning = false
         installURLString = ""
+    }
+
+    /// Holds a background task so the install server keeps running while
+    /// iOS downloads the IPA after this app is backgrounded. Ends itself
+    /// after two minutes at the latest; the loopback download takes
+    /// seconds, and the server keeps running in the foreground if the
+    /// user comes back to the app.
+    private func beginInstallBackgroundTask() {
+        endInstallBackgroundTask()
+        installBackgroundTaskID = UIApplication.shared.beginBackgroundTask { [weak self] in
+            Task { @MainActor in
+                self?.endInstallBackgroundTask()
+            }
+        }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 120_000_000_000)
+            self?.endInstallBackgroundTask()
+        }
+    }
+
+    private func endInstallBackgroundTask() {
+        guard installBackgroundTaskID != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(installBackgroundTaskID)
+        installBackgroundTaskID = .invalid
     }
 
     var sideStoreSteps: [String] {
@@ -106,9 +184,18 @@ struct InstallationView: View {
                     Button(NSLocalizedString("install.stop", comment: ""), role: .destructive) { Task { await viewModel.stopServer() } }
                         .accessibilityIdentifier("install.stop")
                 } else {
-                    Button(NSLocalizedString("install.start", comment: "")) { Task { await viewModel.startServer() } }
+                    Button(NSLocalizedString("install.thisdevice", comment: "")) { Task { await viewModel.installOnThisDevice() } }
                         .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("install.start")
+                        .accessibilityIdentifier("install.thisDevice")
+                    Text(NSLocalizedString("install.thisdevice.note", comment: ""))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button(NSLocalizedString("install.otherdevice", comment: "")) { Task { await viewModel.startServer(destination: .anotherDevice) } }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("install.otherDevice")
+                    Text(NSLocalizedString("install.otherdevice.note", comment: ""))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             Section(NSLocalizedString("install.section.sidestore", comment: "")) {
@@ -123,6 +210,9 @@ struct InstallationView: View {
                 ForEach(viewModel.sideStoreSteps.indices, id: \.self) { index in
                     Text(viewModel.sideStoreSteps[index]).font(.caption)
                 }
+                Text(NSLocalizedString("install.sidestore.wifi", comment: ""))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             if let error = viewModel.errorMessage {
                 Section { Text(error).foregroundStyle(.red) }

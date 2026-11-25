@@ -13,11 +13,14 @@ import Foundation
 //    engine is constructed with `UnsupportedInstallationServer`, which
 //    throws a clear error instead of pretending the install works.
 //    The server binds a random port in 4000-8000 on all interfaces
-//    (0.0.0.0) and advertises the device's LAN address so another
-//    device on the same network can install, serves ONLY the single
-//    IPA + manifest + icons for the install in progress (no directory
-//    listing, no access to other user files), and shuts down after the
-//    install or after the timeout.
+//    (0.0.0.0). Two destinations: `.thisDevice` advertises loopback
+//    (127.0.0.1), which the device can always reach itself — on Wi-Fi,
+//    on cellular data, or with no network at all, so no Wi-Fi is needed;
+//    `.anotherDevice` advertises the Wi-Fi (LAN) address and throws
+//    when the device has no Wi-Fi address. The server serves ONLY the
+//    single IPA + manifest + icons for the install in progress (no
+//    directory listing, no access to other user files), and shuts down
+//    after the install or after the timeout.
 // 2. SideStore export (`exportForSideStore`): produces a valid signed IPA
 //    file in the Files-visible `Documents/SideStoreExports` folder, plus a
 //    `SideStoreGuide` (ordered steps as data) explaining the import.
@@ -98,6 +101,22 @@ public struct InstallationServerFile: Sendable, Equatable {
     }
 }
 
+/// How the local server advertises itself in the returned base URL.
+public enum ServerAdvertiseMode: Sendable {
+    /// Wi-Fi address (en0), then cellular (pdp_ip0), then loopback.
+    /// The default: reachable from another device on Wi-Fi when there
+    /// is one, and from this device itself otherwise.
+    case automatic
+    /// Always 127.0.0.1 — reachable from this device on any connection
+    /// (Wi-Fi, cellular data, or no network at all). Only this device
+    /// can install from it; another device cannot reach loopback.
+    case loopback
+    /// Wi-Fi address (en0) only. Throws when the device has no Wi-Fi
+    /// address, because loopback and the cellular address are not
+    /// reachable from another device.
+    case lan
+}
+
 /// The local install server. `start` binds all interfaces (0.0.0.0),
 /// serves the given files, and returns the base URL (e.g.
 /// `http://192.168.1.5:5231` on the LAN, `http://127.0.0.1:5231`
@@ -107,8 +126,17 @@ public protocol InstallationServerProtocol: AnyObject, Sendable {
     var isRunning: Bool { get }
     var baseURL: URL? { get }
     func start(serving files: [InstallationServerFile], timeout: TimeInterval) async throws -> URL
+    func start(serving files: [InstallationServerFile], timeout: TimeInterval, advertise: ServerAdvertiseMode) async throws -> URL
     func serve(file: InstallationServerFile) async throws
     func stop() async
+}
+
+public extension InstallationServerProtocol {
+    /// Default: ignore the advertise mode and use the plain start
+    /// (automatic). Servers that support the mode override this method.
+    func start(serving files: [InstallationServerFile], timeout: TimeInterval, advertise: ServerAdvertiseMode) async throws -> URL {
+        try await start(serving: files, timeout: timeout)
+    }
 }
 
 /// Fallback used when SwiftNIO is not linked: every start/serve throws a
@@ -186,6 +214,18 @@ public struct UnavailableIDeviceAdapter: IDeviceAdapterProtocol {
     }
 }
 
+/// Where an over-the-air install is meant to run.
+public enum InstallDestination: Sendable {
+    /// This device. The server is advertised on loopback (127.0.0.1),
+    /// which the device can always reach itself — on Wi-Fi, on cellular
+    /// data, or with no network at all. No Wi-Fi required.
+    case thisDevice
+    /// Another device on the same network. The server is advertised on
+    /// the Wi-Fi (LAN) address; throws when the device has no Wi-Fi
+    /// address, because loopback is not reachable from another device.
+    case anotherDevice
+}
+
 // MARK: - Engine
 
 /// Coordinates the three install paths: local-server install, SideStore
@@ -222,11 +262,18 @@ public final class InstallationEngine: @unchecked Sendable {
     /// first (so its base URL is known), then the manifest is generated
     /// against that base URL and served too. The server stops by itself
     /// after `timeout`; call `stopServing()` to stop it sooner.
+    ///
+    /// - Parameter destination: `.thisDevice` (default) advertises the
+    ///   server on loopback, so the install works without Wi-Fi — on
+    ///   cellular data or with no network at all. `.anotherDevice`
+    ///   advertises the Wi-Fi (LAN) address and throws when the device
+    ///   has no Wi-Fi address.
     public func prepareInstall(
         ipaURL: URL,
         bundleIdentifier: String,
         bundleVersion: String,
         title: String,
+        destination: InstallDestination = .thisDevice,
         displayImageURL: URL? = nil,
         fullSizeImageURL: URL? = nil,
         timeout: TimeInterval = InstallationEngine.defaultServerTimeout
@@ -251,12 +298,19 @@ public final class InstallationEngine: @unchecked Sendable {
         }
 
         // Start the server with the IPA so the base URL (and port) is known
-        // before the manifest is generated.
+        // before the manifest is generated. `.thisDevice` advertises
+        // loopback (no Wi-Fi needed); `.anotherDevice` advertises the
+        // Wi-Fi address and throws when there is none.
+        let advertiseMode: ServerAdvertiseMode = switch destination {
+        case .thisDevice: .loopback
+        case .anotherDevice: .lan
+        }
         let baseURL: URL
         do {
             baseURL = try await server.start(
                 serving: [InstallationServerFile(route: "/app.ipa", fileURL: ipaURL, contentType: "application/octet-stream")],
-                timeout: timeout
+                timeout: timeout,
+                advertise: advertiseMode
             )
         } catch let error as InstallationError {
             throw error

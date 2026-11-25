@@ -127,4 +127,38 @@ final class InstallationEngineTests: XCTestCase {
         await engine.stopServing()
         XCTAssertFalse(engine.isServing)
     }
+
+    /// Same-device install needs no Wi-Fi: `.thisDevice` must advertise
+    /// loopback (127.0.0.1) in the manifest and install URLs, and the
+    /// served IPA must be fetchable from that loopback base URL.
+    func testPrepareInstallThisDeviceUsesLoopback() async throws {
+        let plist = "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>com.example.installtest</string><key>CFBundleExecutable</key><string>InstallTest</string><key>CFBundleName</key><string>InstallTest</string><key>CFBundleVersion</key><string>1.2.3</string></dict></plist>"
+        let ipaData = zipData(entries: [("Payload/InstallTest.app/Info.plist", Data(plist.utf8))])
+        let ipaURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("InstallTest-\(UUID().uuidString).ipa")
+        try ipaData.write(to: ipaURL)
+        defer { try? FileManager.default.removeItem(at: ipaURL) }
+
+        let engine = InstallationEngine(server: NIOInstallationServer())
+        let session = try await engine.prepareInstall(
+            ipaURL: ipaURL,
+            bundleIdentifier: "com.example.installtest",
+            bundleVersion: "1.2.3",
+            title: "InstallTest",
+            destination: .thisDevice,
+            timeout: 60
+        )
+
+        XCTAssertTrue(engine.isServing)
+        XCTAssertEqual(session.manifestURL.host, "127.0.0.1", "Same-device install must use loopback: \(session.manifestURL)")
+        XCTAssertTrue(session.installURL.absoluteString.contains("127.0.0.1"), "Install URL must use loopback: \(session.installURL)")
+
+        let loopbackBase = session.manifestURL.deletingLastPathComponent()
+        let (servedIPA, ipaResponse) = try await URLSession.shared.data(from: loopbackBase.appendingPathComponent("app.ipa"))
+        XCTAssertEqual((ipaResponse as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(servedIPA, ipaData)
+
+        await engine.stopServing()
+        XCTAssertFalse(engine.isServing)
+    }
 }

@@ -20,10 +20,16 @@ import NIOHTTP1
 //
 // BEHAVIOUR:
 // * Binds a random port in 4000-8000 on all interfaces (0.0.0.0) and
-//   advertises the device's LAN address (en0) in the returned base URL,
-//   falling back to 127.0.0.1 when no LAN address exists — so the
-//   itms-services URL works from another device on the same network as
-//   well as on this device.
+//   advertises, by default (`.automatic`), the device's Wi-Fi address
+//   (en0), then its cellular address (pdp_ip0), then loopback
+//   (127.0.0.1) — so the itms-services URL works from another device
+//   on the same network as well as on this device.
+// * `.loopback` always advertises 127.0.0.1: the device can always
+//   reach its own loopback, on Wi-Fi, on cellular data, or with no
+//   network at all — no Wi-Fi required to install on this device.
+// * `.lan` advertises the Wi-Fi address only and throws when the
+//   device has no Wi-Fi address, because loopback and the cellular
+//   address are not reachable from another device.
 // * Serves ONLY the files registered for the install in progress — the
 //   single IPA, the manifest plist, and the install icons. There is no
 //   directory listing and no route that can reach any other user file.
@@ -62,8 +68,28 @@ public final class NIOInstallationServer: InstallationServerProtocol, @unchecked
     }
 
     public func start(serving files: [InstallationServerFile], timeout: TimeInterval) async throws -> URL {
+        try await start(serving: files, timeout: timeout, advertise: .automatic)
+    }
+
+    public func start(serving files: [InstallationServerFile], timeout: TimeInterval, advertise: ServerAdvertiseMode) async throws -> URL {
         if isRunning {
             throw InstallationError.serverStartFailed("Installation server is already running.")
+        }
+        // Resolve the advertised host BEFORE binding: `.lan` fails fast
+        // when the device has no Wi-Fi address instead of trying every
+        // port first. Loopback is always valid; `.automatic` always
+        // resolves (en0 -> pdp_ip0 -> loopback).
+        let advertisedHost: String
+        switch advertise {
+        case .loopback:
+            advertisedHost = "127.0.0.1"
+        case .lan:
+            guard let lan = Self.lanIPAddress() else {
+                throw InstallationError.serverStartFailed("No Wi-Fi connection: installing on another device needs this device on Wi-Fi so the other device can reach the install server.")
+            }
+            advertisedHost = lan
+        case .automatic:
+            advertisedHost = Self.advertisedIPAddress() ?? "127.0.0.1"
         }
         for file in files {
             handler.register(file: file)
@@ -87,7 +113,6 @@ public final class NIOInstallationServer: InstallationServerProtocol, @unchecked
                 // 0.0.0.0: listen on every interface (Wi-Fi/LAN included),
                 // so another device on the same network can install.
                 let bound = try await bootstrap.bind(host: "0.0.0.0", port: port).get()
-                let advertisedHost = Self.lanIPAddress() ?? "127.0.0.1"
                 withLock {
                     channel = bound
                     boundBaseURL = URL(string: "http://\(advertisedHost):\(port)")
@@ -109,15 +134,28 @@ public final class NIOInstallationServer: InstallationServerProtocol, @unchecked
 
     /// The device's IPv4 LAN address (en0), for advertising the server
     /// to other devices on the same network. Nil when there is no Wi-Fi
-    /// interface address (then the server is advertised on loopback).
+    /// interface address.
     private static func lanIPAddress() -> String? {
+        address(ofInterfaceNamed: "en0")
+    }
+
+    /// The address to advertise in `.automatic` mode: the Wi-Fi address
+    /// (en0) first, then the cellular address (pdp_ip0) — the device can
+    /// reach its own cellular address locally, so installs keep working
+    /// on cellular data — then nil (the caller falls back to loopback).
+    private static func advertisedIPAddress() -> String? {
+        address(ofInterfaceNamed: "en0") ?? address(ofInterfaceNamed: "pdp_ip0")
+    }
+
+    /// The IPv4 address of one named interface, or nil when it has none.
+    private static func address(ofInterfaceNamed interfaceName: String) -> String? {
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
         defer { freeifaddrs(ifaddr) }
         for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
             let interface = ptr.pointee
             guard interface.ifa_addr.pointee.sa_family == UInt8(AF_INET),
-                  String(cString: interface.ifa_name) == "en0" else { continue }
+                  String(cString: interface.ifa_name) == interfaceName else { continue }
             var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len), &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST)
             return String(cString: hostname)

@@ -271,3 +271,8 @@
 "install.section.sidestore" = "سايد ستور";
 "install.sidestore.export" = "تصدير IPA لـ SideStore";
 "install.sidestore.step" = "الخطوة %d: افتح SideStore، واستورد ملف IPA المُصدَّر، وثبّته من «تطبيقاتي».";
+"install.thisdevice" = "ثبّت على هذا الجهاز";
+"install.thisdevice.note" = "يعمل بدون واي فاي — التثبيت يتم على هذا الجهاز نفسه.";
+"install.otherdevice" = "ثبّت على جهاز آخر";
+"install.otherdevice.note" = "يحتاج واي فاي: الجهاز الآخر يفتح الرابط على نفس الشبكة.";
+"install.sidestore.wifi" = "SideStore نفسه يحتاج واي فاي للتثبيت.";
