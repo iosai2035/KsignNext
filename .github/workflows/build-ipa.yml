@@ -110,13 +110,13 @@ jobs:
           EOF
 
       - name: Build tests (no execution)
-      timeout-minutes: 30
-      run: |
+        timeout-minutes: 30
+        run: |
         set -o pipefail
         xcodebuild build-for-testing -project KsignNext.xcodeproj -scheme KsignNext -destination 'platform=iOS Simulator,id=${{ env.SIM_UDID}}' -only-testing:KsignNextTests ONLY_ACTIVE_ARCH=YES 2>&1 | tee build/test.log
     - name: Run unit + integration + security tests
-      timeout-minutes: 30
-      run: |
+        timeout-minutes: 30
+        run: |
         # Fresh simulator right before the test run: the simulator booted
         # before the long build goes stale by the time xcodebuild installs
         # the test bundles, and xcodebuild then hangs silently after the
