@@ -3,7 +3,7 @@ import SwiftUI
 enum DownloadState: String, Equatable { case queued, downloading, paused, completed, failed, cancelled }
 
 struct DownloadItem: Identifiable, Equatable {
-    let id = UUID()
+    let id: UUID
     var urlString: String
     var fileName: String
     var progress: Double = 0
@@ -11,8 +11,44 @@ struct DownloadItem: Identifiable, Equatable {
     var speedBytesPerSecond: Int64 = 0
     var etaSeconds: Int?
     var errorMessage: String?
-    var task: URLSessionDownloadTask?
     var startDate: Date?
+
+    init(id: UUID = UUID(), urlString: String, fileName: String, progress: Double = 0,
+         state: DownloadState = .queued, speedBytesPerSecond: Int64 = 0, etaSeconds: Int? = nil,
+         errorMessage: String? = nil, startDate: Date? = nil) {
+        self.id = id
+        self.urlString = urlString
+        self.fileName = fileName
+        self.progress = progress
+        self.state = state
+        self.speedBytesPerSecond = speedBytesPerSecond
+        self.etaSeconds = etaSeconds
+        self.errorMessage = errorMessage
+        self.startDate = startDate
+    }
+
+    /// Builds a row from an engine snapshot. The engine task's id is
+    /// the row id, so later snapshots merge into the same row.
+    init(task: DownloadTask) {
+        self.id = task.id
+        self.urlString = task.url.absoluteString
+        self.fileName = task.fileName
+        self.progress = task.progress
+        self.state = DownloadState(task.status)
+        self.speedBytesPerSecond = Int64(task.speed)
+        self.etaSeconds = task.eta.map { Int($0) }
+        self.errorMessage = task.errorDescription
+        self.startDate = task.createdAt
+    }
+
+    /// Applies a newer engine snapshot to this row.
+    mutating func apply(_ task: DownloadTask) {
+        progress = task.progress
+        state = DownloadState(task.status)
+        speedBytesPerSecond = Int64(task.speed)
+        etaSeconds = task.eta.map { Int($0) }
+        errorMessage = task.errorDescription
+    }
 
     var etaText: String {
         guard let eta = etaSeconds, state == .downloading else { return "—" }
@@ -20,112 +56,158 @@ struct DownloadItem: Identifiable, Equatable {
     }
 }
 
+extension DownloadState {
+    init(_ status: DownloadStatus) {
+        switch status {
+        case .pending, .queued: self = .queued
+        case .downloading: self = .downloading
+        case .paused: self = .paused
+        case .completed: self = .completed
+        case .failed: self = .failed
+        case .cancelled: self = .cancelled
+        }
+    }
+}
+
+/// Downloads screen, driven by the real `DownloadEngine` (queue,
+/// concurrency limit, pause/resume/retry, SHA-256 check, background
+/// session) instead of raw `URLSession` tasks in the view. The engine
+/// owns the work; this model only mirrors its snapshots into rows.
 @MainActor
 final class DownloadsViewModel: ObservableObject {
     @Published var downloads: [DownloadItem] = []
     @Published var newURLString = ""
     @Published var errorMessage: String?
-    private var progressTimer: Timer?
+
+    private let engine: DownloadEngine
+    /// Engine task ids backing local rows. Rows without one (e.g. set
+    /// directly by tests) are managed locally only and never sent to
+    /// the engine.
+    private var engineTaskIDs: Set<UUID> = []
+    private var updatesTask: Task<Void, Never>?
+
+    /// - Parameter container: the app's container; nil builds a fresh
+    ///   `DownloadEngine` (tests / previews).
+    init(container: DependencyContainer? = nil) {
+        let engine = container?.downloadEngine ?? DownloadEngine()
+        self.engine = engine
+        // Re-sync the Settings concurrency limit: the container sets
+        // it at launch, but the user may have moved the stepper since.
+        let saved = UserDefaults.standard.integer(forKey: "ksign.downloads.maxConcurrent")
+        let limit = saved == 0 ? 2 : saved
+        Task { [engine] in await engine.setMaxConcurrentDownloads(limit) }
+    }
+
+    deinit { updatesTask?.cancel() }
+
+    /// Starts listening to the engine's task stream. Called once from
+    /// the view; safe to call again (the previous subscription is
+    /// replaced). Runs detached so the observation task never retains
+    /// this model.
+    func startObserving() {
+        updatesTask?.cancel()
+        updatesTask = Task.detached { [weak self, engine] in
+            let initial = await engine.allTasks()
+            await MainActor.run { self?.merge(initial) }
+            for await tasks in await engine.updates() {
+                if Task.isCancelled { break }
+                await MainActor.run { self?.merge(tasks) }
+            }
+        }
+    }
+
+    /// Merges engine snapshots into the local rows, by engine task id.
+    /// Rows whose engine task vanished are dropped; local-only rows
+    /// are left alone.
+    private func merge(_ tasks: [DownloadTask]) {
+        for task in tasks {
+            engineTaskIDs.insert(task.id)
+            if let index = downloads.firstIndex(where: { $0.id == task.id }) {
+                downloads[index].apply(task)
+            } else {
+                downloads.append(DownloadItem(task: task))
+            }
+        }
+        downloads.removeAll { item in
+            engineTaskIDs.contains(item.id) && !tasks.contains(where: { $0.id == item.id })
+        }
+    }
 
     func addDownload() {
         let trimmed = newURLString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed), url.scheme == "https" else {
             errorMessage = NSLocalizedString("downloads.error.url", comment: ""); return
         }
-        var item = DownloadItem(urlString: trimmed, fileName: url.lastPathComponent.isEmpty ? "download.ipa" : url.lastPathComponent)
-        item.state = .downloading
-        item.startDate = Date()
-        downloads.append(item)
         newURLString = ""
-        startTask(for: item.id, url: url)
-        startProgressTimer()
-    }
-
-    private func startTask(for id: UUID, url: URL) {
-        guard let index = downloads.firstIndex(where: { $0.id == id }) else { return }
-        let task = URLSession.shared.downloadTask(with: url) { [weak self] tempURL, _, error in
-            Task { @MainActor in
-                guard let self, let idx = self.downloads.firstIndex(where: { $0.id == id }) else { return }
-                if let error {
-                    self.downloads[idx].state = .failed
-                    self.downloads[idx].errorMessage = error.localizedDescription
-                    return
-                }
-                guard let tempURL, let destDir = Workspace.folder("Downloads") else {
-                    self.downloads[idx].state = .failed
-                    self.downloads[idx].errorMessage = NSLocalizedString("error.documents.unavailable", comment: "")
-                    return
-                }
-                let dest = destDir.appendingPathComponent(self.downloads[idx].fileName)
-                do {
-                    if FileManager.default.fileExists(atPath: dest.path) { try FileManager.default.removeItem(at: dest) }
-                    try FileManager.default.moveItem(at: tempURL, to: dest)
-                    self.downloads[idx].state = .completed
-                    self.downloads[idx].progress = 1
-                } catch {
-                    self.downloads[idx].state = .failed
-                    self.downloads[idx].errorMessage = error.localizedDescription
-                }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let task = try await engine.enqueue(url: url)
+                self.merge([task])
+            } catch {
+                self.errorMessage = error.localizedDescription
             }
         }
-        downloads[index].task = task
-        task.resume()
-    }
-
-    private func startProgressTimer() {
-        progressTimer?.invalidate()
-        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.pollProgress() }
-        }
-    }
-
-    private func pollProgress() {
-        for index in downloads.indices where downloads[index].state == .downloading {
-            if let task = downloads[index].task {
-                let progress = task.progress
-                downloads[index].progress = progress.fractionCompleted
-                downloads[index].speedBytesPerSecond = Int64(progress.throughput ?? 0)
-                if progress.fractionCompleted > 0, progress.totalUnitCount > 0 {
-                    let total = progress.totalUnitCount
-                    let remaining = Double(total) * (1 - progress.fractionCompleted)
-                    let throughput = Double(max(downloads[index].speedBytesPerSecond, 1))
-                    downloads[index].etaSeconds = Int(remaining / throughput)
-                }
-            }
-        }
-        if !downloads.contains(where: { $0.state == .downloading }) { progressTimer?.invalidate() }
     }
 
     func pause(_ item: DownloadItem) {
         guard let index = downloads.firstIndex(where: { $0.id == item.id }) else { return }
-        downloads[index].task?.suspend()
         downloads[index].state = .paused
+        if engineTaskIDs.contains(item.id) {
+            Task { [engine] in await engine.pause(id: item.id) }
+        }
     }
 
     func resume(_ item: DownloadItem) {
         guard let index = downloads.firstIndex(where: { $0.id == item.id }) else { return }
-        if downloads[index].state == .failed {
+        if engineTaskIDs.contains(item.id) {
+            downloads[index].state = .downloading
+            downloads[index].errorMessage = nil
+            Task { [engine] in await engine.resume(id: item.id) }
+        } else if downloads[index].state == .failed {
             guard let url = URL(string: downloads[index].urlString) else { return }
             downloads[index].state = .downloading
             downloads[index].errorMessage = nil
-            startTask(for: item.id, url: url)
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let task = try await engine.enqueue(url: url)
+                    self.merge([task])
+                } catch { self.errorMessage = error.localizedDescription }
+            }
         } else {
-            downloads[index].task?.resume()
             downloads[index].state = .downloading
-            startProgressTimer()
         }
     }
 
-    func retry(_ item: DownloadItem) { resume(item) }
+    func retry(_ item: DownloadItem) {
+        if engineTaskIDs.contains(item.id) {
+            Task { [engine] in await engine.retry(id: item.id) }
+        } else {
+            resume(item)
+        }
+    }
 
     func delete(_ item: DownloadItem) {
-        downloads.first(where: { $0.id == item.id })?.task?.cancel()
+        if engineTaskIDs.contains(item.id) {
+            engineTaskIDs.remove(item.id)
+            Task { [engine] in
+                await engine.cancel(id: item.id)
+                try? await engine.removeTask(id: item.id)
+            }
+        }
         downloads.removeAll { $0.id == item.id }
     }
 }
 
 struct DownloadsView: View {
-    @StateObject private var viewModel = DownloadsViewModel()
+    @StateObject private var viewModel: DownloadsViewModel
+
+    /// - Parameter container: the app's container; nil builds a fresh
+    ///   download engine (tests / previews).
+    init(container: DependencyContainer? = nil) {
+        _viewModel = StateObject(wrappedValue: DownloadsViewModel(container: container))
+    }
 
     var body: some View {
         NavigationStack {
@@ -181,6 +263,7 @@ struct DownloadsView: View {
                 }
             }
             .navigationTitle(NSLocalizedString("tab.downloads", comment: ""))
+            .task { viewModel.startObserving() }
             .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: Binding(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil } })) {
                 Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
             } message: { Text(viewModel.errorMessage ?? "") }

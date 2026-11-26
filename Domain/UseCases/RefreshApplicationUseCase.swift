@@ -118,13 +118,26 @@ public final class RefreshApplicationUseCase {
     public func plan(signedIPAURL: URL) async throws -> RefreshPlan {
         let fileName = signedIPAURL.lastPathComponent
         let records = (try? await signedRepository.fetchAll()) ?? []
-        guard let record = records.first(where: { $0.signedFileURL.lastPathComponent == fileName }) else {
+        // Match by bundle identifier first: file names can collide or
+        // change, but the bundle id is the app's identity. The file
+        // name is only a fallback for records whose bundle id was
+        // never recorded.
+        let bundleID = try? await ipaEngine.readAppMetadata(at: signedIPAURL).bundleIdentifier
+        let record = (bundleID.flatMap { id in records.first(where: { $0.bundleIdentifier == id }) })
+            ?? records.first(where: { $0.signedFileURL.lastPathComponent == fileName })
+        guard let record else {
             throw RefreshError.noSigningRecord(fileName)
         }
-        if let certificateID = record.certificateID {
-            guard try await certificateRepository.fetch(id: certificateID) != nil else {
-                throw RefreshError.certificateNotFound
-            }
+        // A profile exists below, so this was not an ad-hoc signing
+        // and a certificate must have been used. A nil certificate id
+        // here means the record cannot name what to re-sign with, so
+        // refuse plainly instead of building a request that fails
+        // opaquely inside the engine.
+        guard let certificateID = record.certificateID else {
+            throw RefreshError.certificateNotFound
+        }
+        guard try await certificateRepository.fetch(id: certificateID) != nil else {
+            throw RefreshError.certificateNotFound
         }
         guard let profile = try await embeddedProfile(signedIPAURL: signedIPAURL) else {
             throw RefreshError.profileNotFound

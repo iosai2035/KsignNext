@@ -32,7 +32,15 @@ public final class HTTPClient {
             config.timeoutIntervalForResource = configuration.resourceTimeout
             config.allowsCellularAccess = configuration.allowsCellularAccess
             config.httpMaximumConnectionsPerHost = 4
-            self.session = URLSession(configuration: config)
+            // Enforces `maxRedirects` (previously declared but never
+            // applied): the delegate counts redirects per task and
+            // stops following them past the limit instead of letting
+            // URLSession chase an open redirect chain.
+            self.session = URLSession(
+                configuration: config,
+                delegate: RedirectLimitDelegate(maxRedirects: configuration.maxRedirects),
+                delegateQueue: nil
+            )
         }
     }
 
@@ -110,5 +118,49 @@ public final class HTTPClient {
         guard let value = response.headers["Content-Length"] as? String ?? (response.headers["content-length"] as? String),
               let length = Int64(value) else { return nil }
         return length
+    }
+}
+
+/// `URLSessionTaskDelegate` that caps the redirect chain per task.
+///
+/// URLSession follows redirects by default with no limit exposed on
+/// `URLSessionConfiguration`; without this delegate a server could
+/// bounce a request forever (or into a loop) while the caller waits.
+/// Counts are keyed by `taskIdentifier` and dropped when the task
+/// finishes, so a reused session never leaks entries.
+final class RedirectLimitDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let maxRedirects: Int
+    private let lock = NSLock()
+    private var counts: [Int: Int] = [:]
+
+    init(maxRedirects: Int) {
+        self.maxRedirects = max(0, maxRedirects)
+        super.init()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        lock.lock()
+        let count = (counts[task.taskIdentifier] ?? 0) + 1
+        counts[task.taskIdentifier] = count
+        lock.unlock()
+        guard count <= maxRedirects else {
+            // Stop following: the caller sees the last 3xx response
+            // as a non-2xx status error instead of an endless chain.
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        counts[task.taskIdentifier] = nil
+        lock.unlock()
     }
 }

@@ -59,6 +59,35 @@ public enum EntitlementsValidator {
         }
     }
 
+    /// Builds a model from a parsed plist dictionary. String, Bool,
+    /// integer, string-array and string-dictionary values map to
+    /// their typed cases; anything else is kept as its description
+    /// so the validator can still compare keys.
+    public static func model(fromPlistDictionary dict: [String: Any],
+                             source: EntitlementsModel.Source) -> EntitlementsModel {
+        var values: [String: EntitlementValue] = [:]
+        for (key, value) in dict {
+            switch value {
+            case let string as String: values[key] = .string(string)
+            case let bool as Bool: values[key] = .bool(bool)
+            case let number as NSNumber: values[key] = .integer(number.intValue)
+            case let array as [String]: values[key] = .array(array)
+            case let dict as [String: String]: values[key] = .dictionary(dict)
+            case let dict as [String: Any]:
+                values[key] = .dictionary(dict.mapValues { String(describing: $0) })
+            default: values[key] = .string(String(describing: value))
+            }
+        }
+        return EntitlementsModel(values: values, source: source)
+    }
+
+    /// Builds a model from a provisioning profile's raw string
+    /// entitlements (`ProvisioningModel.entitlements`).
+    public static func model(fromStringDictionary dict: [String: String],
+                             source: EntitlementsModel.Source) -> EntitlementsModel {
+        EntitlementsModel(values: dict.mapValues { EntitlementValue.string($0) }, source: source)
+    }
+
     /// Checks the application-identifier / team identifiers agree.
     public static func validateIdentifiers(app: EntitlementsModel, profile: ProvisioningModel) throws {
         if let appTeam = app.teamIdentifier, appTeam != profile.teamIdentifier {

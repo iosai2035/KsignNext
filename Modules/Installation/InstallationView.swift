@@ -223,6 +223,17 @@ final class InstallationViewModel: ObservableObject {
         UIApplication.shared.open(session.installURL, options: [:], completionHandler: nil)
     }
 
+    /// Starts the install server on entry when the Settings toggle
+    /// `ksign.install.autoStartServer` is on. Does nothing when the
+    /// toggle is off, when no app is selected, or when the server is
+    /// already running; a start failure is reported through
+    /// `errorMessage` by `startServer` itself.
+    func autoStartServerIfEnabled() async {
+        guard UserDefaults.standard.bool(forKey: "ksign.install.autoStartServer"),
+              !isRunning, !selectedApp.isEmpty else { return }
+        await startServer()
+    }
+
     func stopServer() async {
         endInstallBackgroundTask()
         await installationEngine.stopServing()
@@ -386,7 +397,10 @@ struct InstallationView: View {
             }
         }
         .navigationTitle(NSLocalizedString("tab.installation", comment: ""))
-        .onAppear { viewModel.refreshSignedApps() }
+        .onAppear {
+            viewModel.refreshSignedApps()
+            Task { await viewModel.autoStartServerIfEnabled() }
+        }
         .onChange(of: viewModel.selectedApp) { _ in Task { await viewModel.loadSignatureExpiry() } }
         .onDisappear { Task { if viewModel.isRunning { await viewModel.stopServer() } } }
     }

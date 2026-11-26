@@ -124,7 +124,10 @@ public actor SigningEngine: SigningEngineProtocol {
             throw SigningError.invalidIPA(reason: "Executable “\(executableName)” listed in Info.plist is missing from \(appURL.lastPathComponent).")
         }
         let archs = MachOArchitectures.architectures(at: executableURL)
-        if !archs.isEmpty, !MachOArchitectures.isArm64(archs) {
+        guard !archs.isEmpty else {
+            throw SigningError.invalidIPA(reason: "Could not read the main executable's architecture; the file may be corrupt.")
+        }
+        if !MachOArchitectures.isArm64(archs) {
             throw SigningError.unsupportedArchitecture("Main executable is \(archs.joined(separator: ", ")), not arm64.")
         }
         if let entitlementsURL = config.entitlementsURL,
@@ -144,10 +147,48 @@ public actor SigningEngine: SigningEngineProtocol {
             }
             if let team = certificate?.teamIdentifier, team != profile.teamIdentifier {
                 throw SigningError.teamIdentifierMismatch(expected: profile.teamIdentifier, found: team)
+            } else if certificate != nil, certificate?.teamIdentifier == nil {
+                throw SigningError.invalidCertificate(reason: "The certificate has no team identifier, so it cannot be matched against the provisioning profile.")
+            }
+            // Entitlements: when the request carries its own
+            // entitlements file, every key it requests must be
+            // granted by the profile — otherwise zsign would sign
+            // an app iOS refuses to launch.
+            if let entitlementsURL = config.entitlementsURL, !config.doAdhocSigning {
+                try validateEntitlements(entitlementsURL: entitlementsURL, profile: profile)
             }
         } else if !config.doAdhocSigning {
             throw SigningError.missingProvisioningProfile
         }
+    }
+
+    // MARK: - validate helpers
+
+    /// Parses the request's entitlements plist and checks every
+    /// requested key against the profile's grants. An unparseable
+    /// entitlements file refuses signing with a clear error rather
+    /// than letting zsign fail later with a generic code.
+    private func validateEntitlements(entitlementsURL: URL, profile: ProvisioningModel) throws {
+        let data: Data
+        do {
+            data = try Data(contentsOf: entitlementsURL)
+        } catch {
+            throw SigningError.invalidIPA(reason: "Cannot read entitlements file \(entitlementsURL.lastPathComponent).")
+        }
+        let plist: Any
+        do {
+            plist = try PropertyListSerialization.propertyList(from: data, format: nil)
+        } catch {
+            throw SigningError.invalidIPA(reason: "Cannot parse entitlements file \(entitlementsURL.lastPathComponent): not a valid plist.")
+        }
+        guard let dict = plist as? [String: Any] else {
+            throw SigningError.invalidIPA(reason: "Entitlements file \(entitlementsURL.lastPathComponent) is not a plist dictionary.")
+        }
+        let app = EntitlementsValidator.model(fromPlistDictionary: dict, source: .custom)
+        let profileModel = EntitlementsValidator.model(
+            fromStringDictionary: profile.entitlements, source: .provisioningProfile)
+        try EntitlementsValidator.validate(app: app, profile: profileModel)
+        try EntitlementsValidator.validateIdentifiers(app: app, profile: profile)
     }
 
     // MARK: - sign (progress stream)

@@ -36,7 +36,7 @@ private struct RootTabView: View {
             DashboardView()
                 .tabItem { Label(NSLocalizedString("tab.dashboard", comment: ""), systemImage: "square.grid.2x2") }
                 .tag(AppTab.dashboard)
-            ApplicationsView()
+            ApplicationsView(container: coordinator.container)
                 .tabItem { Label(NSLocalizedString("tab.applications", comment: ""), systemImage: "app.badge") }
                 .tag(AppTab.applications)
             CertificatesView(container: coordinator.container)
@@ -45,13 +45,13 @@ private struct RootTabView: View {
             SigningCenterView(container: coordinator.container)
                 .tabItem { Label(NSLocalizedString("tab.signing", comment: ""), systemImage: "signature") }
                 .tag(AppTab.signing)
-            DownloadsView()
+            DownloadsView(container: coordinator.container)
                 .tabItem { Label(NSLocalizedString("tab.downloads", comment: ""), systemImage: "arrow.down.circle") }
                 .tag(AppTab.downloads)
-            TweaksView()
+            TweaksView(container: coordinator.container)
                 .tabItem { Label(NSLocalizedString("tab.tweaks", comment: ""), systemImage: "wrench.and.screwdriver") }
                 .tag(AppTab.tweaks)
-            SourcesView()
+            SourcesView(container: coordinator.container)
                 .tabItem { Label(NSLocalizedString("tab.sources", comment: ""), systemImage: "globe") }
                 .tag(AppTab.sources)
             FileManagerView()

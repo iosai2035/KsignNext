@@ -24,18 +24,21 @@ final class ImportSignExportFlowTests: XCTestCase {
     }
 
     func testImportInspectSignAttemptVerifyExportFlow() async throws {
-        // 1. Import: copy a small ZIP fixture into the workspace.
+        // 1. Import: an 8-byte fake "IPA" must now be rejected by the
+        // real validation in the import use case, instead of being
+        // silently copied as a valid app.
         let ipaData = Data([0x50, 0x4B, 0x03, 0x04, 0x00, 0x01, 0x02, 0x03])
         let source = tempDir.appendingPathComponent("FlowApp.ipa")
         try ipaData.write(to: source)
         let appsVM = ApplicationsViewModel()
-        appsVM.importIPA(source)
-        XCTAssertNil(appsVM.errorMessage)
+        await appsVM.importIPA(source)
+        XCTAssertNotNil(appsVM.errorMessage)
 
-        // 2. Inspect: ZIP magic is recognised.
+        // 2. Inspect: ZIP magic is recognised (fallback path — no
+        // container, so no metadata read).
         let stored = StoredApp(url: source)
         let detailVM = ApplicationDetailViewModel(app: stored)
-        detailVM.inspect()
+        await detailVM.inspect()
         XCTAssertNil(detailVM.errorMessage)
         XCTAssertEqual(detailVM.inspection.displayName, "FlowApp")
 

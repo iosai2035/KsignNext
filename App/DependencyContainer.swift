@@ -29,6 +29,8 @@ public final class DependencyContainer {
     public var downloadEngine: DownloadEngine
     public var verificationEngine: VerificationEngine
     public var installationEngine: InstallationEngine
+    public var sourcesEngine: SourcesEngine
+    public var injectionEngine: InjectionEngine
 
     public init(
         configuration: AppConfiguration = .fromBundle(),
@@ -44,7 +46,9 @@ public final class DependencyContainer {
         machOEngine: MachOEngineProtocol? = nil,
         downloadEngine: DownloadEngine? = nil,
         verificationEngine: VerificationEngine? = nil,
-        installationEngine: InstallationEngine? = nil
+        installationEngine: InstallationEngine? = nil,
+        sourcesEngine: SourcesEngine? = nil,
+        injectionEngine: InjectionEngine? = nil
     ) {
         self.configuration = configuration
         self.persistence = persistence
@@ -56,9 +60,17 @@ public final class DependencyContainer {
         self.ipaEngine = ipaEngine ?? IPAEngine()
         self.certificateEngine = certificateEngine ?? CertificateEngine(keychain: keychain, fileManager: files)
         self.machOEngine = machOEngine ?? MachOEngine()
-        self.downloadEngine = downloadEngine ?? DownloadEngine()
+        self.downloadEngine = downloadEngine ?? {
+            // The concurrency limit is a Settings value, not a
+            // constant: the toggle shows 2 on a fresh install, so an
+            // unset key means 2 here too.
+            let saved = UserDefaults.standard.integer(forKey: "ksign.downloads.maxConcurrent")
+            return DownloadEngine(maxConcurrentDownloads: saved == 0 ? 2 : saved)
+        }()
         self.verificationEngine = verificationEngine ?? VerificationEngine()
         self.installationEngine = installationEngine ?? InstallationEngine(server: NIOInstallationServer())
+        self.sourcesEngine = sourcesEngine ?? SourcesEngine(downloadEngine: self.downloadEngine)
+        self.injectionEngine = injectionEngine ?? InjectionEngine(adapter: ZsignAdapter(backend: ZsignBridgeBackend()))
         if let signingEngine {
             self.signingEngine = signingEngine
         } else {

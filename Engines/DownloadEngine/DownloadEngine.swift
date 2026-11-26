@@ -321,7 +321,18 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
 public actor DownloadEngine {
 
     public static let backgroundSessionIdentifier = "com.ksignnext.app.downloads"
-    public static let maxConcurrentDownloads = 3
+    /// How many downloads run at the same time. An instance setting
+    /// (not a constant) so Settings can change it: the container sets
+    /// it from `ksign.downloads.maxConcurrent` at launch and the
+    /// Downloads screen re-syncs it whenever it appears.
+    public var maxConcurrentDownloads = 3
+
+    /// Applies a new concurrency limit (clamped to the 1...5 range the
+    /// Settings stepper offers). Safe to call while downloads run; the
+    /// scheduler picks the new limit up on its next pass.
+    public func setMaxConcurrentDownloads(_ count: Int) {
+        maxConcurrentDownloads = max(1, min(5, count))
+    }
     public static let maxAttempts = 3
 
     private struct ActiveDownload {
@@ -347,7 +358,8 @@ public actor DownloadEngine {
     ///     declares the background-mode capability, otherwise foreground.
     ///   - destinationDirectory: where finished files are moved. Defaults
     ///     to `Documents/Downloads`, falling back to a temp directory.
-    public init(mode: DownloadSessionMode = .preferred, destinationDirectory: URL? = nil) {
+    public init(mode: DownloadSessionMode = .preferred, destinationDirectory: URL? = nil, maxConcurrentDownloads: Int = 3) {
+        self.maxConcurrentDownloads = max(1, min(5, maxConcurrentDownloads))
         let resolvedDestination: URL
         if let destinationDirectory {
             resolvedDestination = destinationDirectory
@@ -736,11 +748,11 @@ public actor DownloadEngine {
 
     private func startPendingDownloads() {
         let running = active.values.filter { $0.task.status == .downloading }.count
-        guard running < Self.maxConcurrentDownloads else { return }
+        guard running < maxConcurrentDownloads else { return }
         let pending = active.values
             .filter { $0.task.status == .pending }
             .sorted { $0.task.createdAt < $1.task.createdAt }
-        for entry in pending.prefix(Self.maxConcurrentDownloads - running) {
+        for entry in pending.prefix(maxConcurrentDownloads - running) {
             startDownload(id: entry.task.id)
         }
     }

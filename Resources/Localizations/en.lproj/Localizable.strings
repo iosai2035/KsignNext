@@ -130,7 +130,6 @@
 "signing.start" = "Start signing";
 "signing.start.detail" = "Review the summary, then start signing. Progress and logs appear on the next step.";
 "signing.stage.preparing" = "Preparing…";
-"signing.stage.signing" = "Signing…";
 "signing.stage.done" = "Signing finished.";
 "signing.stage.failed" = "Signing failed.";
 "signing.log" = "Log";
@@ -147,7 +146,9 @@
 "tweaks.analysis.arch" = "Architecture: %@";
 "tweaks.arch.unknown" = "Unknown";
 "tweaks.plan.title" = "Injection plan";
-"tweaks.plan.empty" = "No tweaks selected.";
+"tweaks.plan.app" = "Target app";
+"tweaks.plan.compute" = "Compute plan";
+"tweaks.plan.selectApp" = "Select an imported app to compute the real injection plan.";
 "tweaks.stock.warning" = "Warning: ElleKit and Substrate tweaks are not guaranteed to work on stock (non-jailbroken) iOS.";
 "downloads.empty" = "No downloads yet";
 "downloads.empty.detail" = "Paste an HTTPS link to an IPA file above to start a download.";
@@ -236,16 +237,11 @@
 "settings.downloads.concurrent" = "Max concurrent downloads: %d";
 "settings.section.signing" = "Signing";
 "settings.signing.verify" = "Verify after signing";
-"settings.signing.keep" = "Keep the original IPA";
 "settings.section.install" = "Installation";
 "settings.install.autostart" = "Start install server automatically";
 "settings.section.security" = "Security";
-"settings.security.passcode" = "Require passcode to open the app";
 "settings.security.details" = "Security details";
 "settings.security.details.text" = "Certificates are stored in the app Documents folder. P12 passwords are never stored or logged.";
-"settings.section.notifications" = "Notifications";
-"settings.notifications.signing" = "Signing finished";
-"settings.notifications.downloads" = "Downloads finished";
 "settings.section.more" = "More";
 "about.version" = "Version %@ (build %@)";
 "about.description" = "Ksign Next signs and installs IPA files on iOS using your own certificates.";
@@ -263,8 +259,6 @@
 "install.status" = "Status";
 "install.running" = "Running";
 "install.stopped" = "Stopped";
-"install.link" = "Install link";
-"install.start" = "Start server";
 "install.stop" = "Stop server";
 "install.error.noapp" = "Select a signed app first.";
 "install.section.export" = "Export IPA";
@@ -290,7 +284,6 @@
 "udid.clear" = "Remove";
 "udid.saved" = "Saved UDID";
 "udid.empty" = "No UDID saved yet.";
-"udid.invalid" = "Enter the 40-character UDID (letters A–F and digits only).";
 "udid.help" = "Apple needs your device's UDID to register it for a fresh profile. Find it on your computer: connect the device, then click the serial number shown under the device name.";
 "udid.auto.note" = "The app cannot read the UDID itself: iOS has no public API for it, and a free Apple ID cannot carry the VPN entitlement an automatic lookup would need.";
 

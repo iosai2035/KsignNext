@@ -23,6 +23,16 @@ final class ApplicationsViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var showImporter = false
 
+    /// The app's container, exposed so the view can hand it to the
+    /// detail screen (real inspection + sign navigation).
+    let container: DependencyContainer
+
+    /// - Parameter container: the app's container; nil builds a fresh
+    ///   one (tests / previews).
+    init(container: DependencyContainer? = nil) {
+        self.container = container ?? DependencyContainer()
+    }
+
     var filteredApps: [StoredApp] {
         var list = apps
         if showSignedOnly { list = list.filter(\.isSigned) }
@@ -56,18 +66,27 @@ final class ApplicationsViewModel: ObservableObject {
         apps = found
     }
 
-    func importIPA(_ url: URL) {
-        guard url.startAccessingSecurityScopedResource() else {
-            errorMessage = NSLocalizedString("error.file.access", comment: ""); return
-        }
-        defer { url.stopAccessingSecurityScopedResource() }
-        guard let destDir = Workspace.folder("ImportedApps") else { return }
-        let dest = destDir.appendingPathComponent(url.lastPathComponent)
+    /// Imports an IPA through `ImportIPAUseCase`: the engine validates
+    /// the ZIP structure and reads its metadata, and the use case
+    /// saves the `ImportedApplication` record (previously importing
+    /// copied the file and created no record at all). The validated
+    /// file is then also copied into Documents/ImportedApps, which is
+    /// where the app list and the Signing Center look for apps.
+    func importIPA(_ url: URL) async {
         do {
+            _ = try await container.makeImportIPAUseCase().execute(url: url)
+            guard url.startAccessingSecurityScopedResource() else {
+                errorMessage = NSLocalizedString("error.file.access", comment: ""); return
+            }
+            defer { url.stopAccessingSecurityScopedResource() }
+            guard let destDir = Workspace.folder("ImportedApps") else { return }
+            let dest = destDir.appendingPathComponent(url.lastPathComponent)
             if FileManager.default.fileExists(atPath: dest.path) { try FileManager.default.removeItem(at: dest) }
             try FileManager.default.copyItem(at: url, to: dest)
             refresh()
-        } catch { errorMessage = error.localizedDescription }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     func delete(_ app: StoredApp) {
@@ -81,9 +100,15 @@ final class ApplicationsViewModel: ObservableObject {
 }
 
 struct ApplicationsView: View {
-    @StateObject private var viewModel = ApplicationsViewModel()
+    @StateObject private var viewModel: ApplicationsViewModel
     @State private var appToDelete: StoredApp?
     @State private var selectedApp: StoredApp?
+
+    /// - Parameter container: the app's container; nil builds a fresh
+    ///   one (tests / previews).
+    init(container: DependencyContainer? = nil) {
+        _viewModel = StateObject(wrappedValue: ApplicationsViewModel(container: container))
+    }
 
     var body: some View {
         NavigationStack {
@@ -139,7 +164,8 @@ struct ApplicationsView: View {
             }
             .fileImporter(isPresented: $viewModel.showImporter, allowedContentTypes: [.init(filenameExtension: "ipa") ?? .data], allowsMultipleSelection: false) { result in
                 switch result {
-                case .success(let urls): urls.first.map { viewModel.importIPA($0) }
+                case .success(let urls):
+                    if let url = urls.first { Task { await viewModel.importIPA(url) } }
                 case .failure(let error): viewModel.errorMessage = error.localizedDescription
                 }
             }
@@ -157,7 +183,7 @@ struct ApplicationsView: View {
             // `navigationDestination(item:)` needs iOS 17; the `isPresented`
             // variant works from iOS 16.
             .navigationDestination(isPresented: Binding(get: { selectedApp != nil }, set: { if !$0 { selectedApp = nil } })) {
-                if let app = selectedApp { ApplicationDetailView(app: app, onDeleted: { viewModel.refresh() }) }
+                if let app = selectedApp { ApplicationDetailView(app: app, container: viewModel.container, onDeleted: { viewModel.refresh() }) }
             }
         }
     }

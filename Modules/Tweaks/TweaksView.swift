@@ -23,12 +23,40 @@ final class TweaksViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var showImporter = false
 
+    /// Imported IPAs the plan can target, and the selected one.
+    @Published var availableApps: [String] = []
+    @Published var selectedAppName = ""
+    /// The last computed plan, if any. Nil until `computePlan` runs.
+    @Published var plan: InjectionPlan?
+    @Published var isPlanning = false
+
+    private let container: DependencyContainer?
+
+    /// - Parameter container: the app's container; nil builds fresh
+    ///   engines (tests / previews).
+    init(container: DependencyContainer? = nil) {
+        self.container = container
+        refresh()
+    }
+
     func refresh() {
         guard let dir = Workspace.folder("Tweaks") else { return }
         let items = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         tweaks = items.filter { ["dylib", "deb", "framework", "bundle"].contains($0.pathExtension.lowercased()) }
             .map { StoredTweak(url: $0) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        availableApps = listImportedIPAs()
+        if !selectedAppName.isEmpty, !availableApps.contains(selectedAppName) {
+            selectedAppName = ""
+            plan = nil
+        }
+    }
+
+    private func listImportedIPAs() -> [String] {
+        guard let docs = Workspace.documents else { return [] }
+        let dir = docs.appendingPathComponent("ImportedApps", isDirectory: true)
+        let items = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        return items.filter { $0.pathExtension.lowercased() == "ipa" }.map(\.lastPathComponent).sorted()
     }
 
     func importTweak(_ url: URL) {
@@ -71,15 +99,60 @@ final class TweaksViewModel: ObservableObject {
         catch { errorMessage = error.localizedDescription }
     }
 
-    var injectionPlan: String {
-        guard !tweaks.isEmpty else { return NSLocalizedString("tweaks.plan.empty", comment: "") }
-        return tweaks.map { "• \($0.name)" }.joined(separator: "\n")
+    /// Computes the real injection plan for the selected imported app
+    /// with `InjectionEngine.plan`: destination paths, per-item status
+    /// (ready / skipped with a reason), and warnings. Planning only
+    /// reads the app and the tweaks — nothing is copied or modified.
+    /// The heavy work (extraction + planning) runs off the main actor.
+    func computePlan() async {
+        guard !selectedAppName.isEmpty else {
+            errorMessage = NSLocalizedString("tweaks.plan.selectApp", comment: ""); return
+        }
+        guard !tweaks.isEmpty else { return }
+        guard let docs = Workspace.documents else { return }
+        let ipaURL = docs.appendingPathComponent("ImportedApps/\(selectedAppName)")
+        let models = tweaks.map { tweak in
+            TweakModel(
+                name: tweak.name,
+                architecture: analysis[tweak.id]?.architectures.first ?? "arm64",
+                injectionType: InjectionType(rawValue: tweak.kind) ?? .unknown,
+                fileURL: tweak.url
+            )
+        }
+        let engine = container?.injectionEngine ?? InjectionEngine(adapter: ZsignAdapter(backend: ZsignBridgeBackend()))
+        isPlanning = true
+        defer { isPlanning = false }
+        do {
+            let result = try await Task.detached(priority: .userInitiated) {
+                let tmp = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("KsignNext-tweak-plan-\(UUID().uuidString)", isDirectory: true)
+                defer { try? FileManager.default.removeItem(at: tmp) }
+                try ArchiveEngine().extractAll(from: ipaURL, to: tmp)
+                let payload = tmp.appendingPathComponent("Payload", isDirectory: true)
+                let items = try FileManager.default.contentsOfDirectory(at: payload, includingPropertiesForKeys: nil)
+                guard let appURL = items.first(where: { $0.pathExtension.lowercased() == "app" }) else {
+                    throw SigningError.invalidIPA(reason: "No .app bundle under Payload/.")
+                }
+                return try engine.plan(tweaks: models, appBundleURL: appURL)
+            }.value
+            plan = result
+            errorMessage = nil
+        } catch {
+            plan = nil
+            errorMessage = error.localizedDescription
+        }
     }
 }
 
 struct TweaksView: View {
-    @StateObject private var viewModel = TweaksViewModel()
+    @StateObject private var viewModel: TweaksViewModel
     @State private var tweakToDelete: StoredTweak?
+
+    /// - Parameter container: the app's container; nil builds fresh
+    ///   engines (tests / previews).
+    init(container: DependencyContainer? = nil) {
+        _viewModel = StateObject(wrappedValue: TweaksViewModel(container: container))
+    }
 
     var body: some View {
         NavigationStack {
@@ -161,7 +234,30 @@ struct TweaksView: View {
                 }
             }
             Section(NSLocalizedString("tweaks.plan.title", comment: "")) {
-                Text(viewModel.injectionPlan).font(.caption.monospaced())
+                Picker(NSLocalizedString("tweaks.plan.app", comment: ""), selection: $viewModel.selectedAppName) {
+                    Text(NSLocalizedString("tweaks.plan.selectApp", comment: "")).tag("")
+                    ForEach(viewModel.availableApps, id: \.self) { name in Text(name).tag(name) }
+                }
+                Button(NSLocalizedString("tweaks.plan.compute", comment: "")) {
+                    Task { await viewModel.computePlan() }
+                }
+                .disabled(viewModel.selectedAppName.isEmpty || viewModel.isPlanning)
+                if viewModel.isPlanning { ProgressView() }
+                if let plan = viewModel.plan {
+                    ForEach(plan.items) { item in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.name).font(.caption)
+                            Text(item.destinationRelativePath).font(.caption).foregroundStyle(.secondary)
+                            if let reason = item.skipReason {
+                                Text(reason).font(.caption).foregroundStyle(.red)
+                            }
+                        }
+                    }
+                    ForEach(plan.warnings, id: \.self) { warning in
+                        Text(warning).font(.caption).foregroundStyle(.orange)
+                    }
+                    Text(plan.stockIOSWarning).font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
     }

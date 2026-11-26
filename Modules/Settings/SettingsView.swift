@@ -41,11 +41,7 @@ struct SettingsView: View {
     @AppStorage("ksign.appearance") private var appearanceRaw = "system"
     @AppStorage("ksign.downloads.maxConcurrent") private var maxConcurrent = 2
     @AppStorage("ksign.signing.verifyAfterSign") private var verifyAfterSign = true
-    @AppStorage("ksign.signing.keepOriginal") private var keepOriginal = true
     @AppStorage("ksign.install.autoStartServer") private var autoStartServer = false
-    @AppStorage("ksign.security.requirePasscode") private var requirePasscode = false
-    @AppStorage("ksign.notifications.signingDone") private var notifySigningDone = true
-    @AppStorage("ksign.notifications.downloadsDone") private var notifyDownloadsDone = true
     @StateObject private var viewModel = SettingsViewModel()
     @State private var showClearConfirm = false
     @EnvironmentObject private var coordinator: AppCoordinator
@@ -87,7 +83,6 @@ struct SettingsView: View {
                 }
                 Section(NSLocalizedString("settings.section.signing", comment: "")) {
                     Toggle(NSLocalizedString("settings.signing.verify", comment: ""), isOn: $verifyAfterSign)
-                    Toggle(NSLocalizedString("settings.signing.keep", comment: ""), isOn: $keepOriginal)
                 }
                 Section(NSLocalizedString("settings.section.appleid", comment: "")) {
                     NavigationLink(NSLocalizedString("appleid.title", comment: "")) {
@@ -99,18 +94,15 @@ struct SettingsView: View {
                     NavigationLink(NSLocalizedString("tab.installation", comment: "")) { InstallationView(container: coordinator.container) }
                 }
                 Section(NSLocalizedString("settings.section.security", comment: "")) {
-                    Toggle(NSLocalizedString("settings.security.passcode", comment: ""), isOn: $requirePasscode)
                     NavigationLink(NSLocalizedString("settings.security.details", comment: "")) {
-                        Text(NSLocalizedString("settings.security.details.text", comment: "")).padding()
+                        Text(NSLocalizedString("settings.security.details.text", comment: ""))
+                            .padding()
+                            .navigationTitle(NSLocalizedString("settings.security.details", comment: ""))
                     }
                 }
-                Section(NSLocalizedString("settings.section.notifications", comment: "")) {
-                    Toggle(NSLocalizedString("settings.notifications.signing", comment: ""), isOn: $notifySigningDone)
-                    Toggle(NSLocalizedString("settings.notifications.downloads", comment: ""), isOn: $notifyDownloadsDone)
-                }
                 Section(NSLocalizedString("settings.section.more", comment: "")) {
-                    NavigationLink(NSLocalizedString("tab.tweaks", comment: "")) { TweaksView() }
-                    NavigationLink(NSLocalizedString("tab.sources", comment: "")) { SourcesView() }
+                    NavigationLink(NSLocalizedString("tab.tweaks", comment: "")) { TweaksView(container: coordinator.container) }
+                    NavigationLink(NSLocalizedString("tab.sources", comment: "")) { SourcesView(container: coordinator.container) }
                     NavigationLink(NSLocalizedString("tab.files", comment: "")) { FileManagerView() }
                     NavigationLink(NSLocalizedString("tab.logs", comment: "")) { LogsView() }
                     NavigationLink(NSLocalizedString("tab.about", comment: "")) { AboutView() }

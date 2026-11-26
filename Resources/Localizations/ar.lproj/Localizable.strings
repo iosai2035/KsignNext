@@ -130,7 +130,6 @@
 "signing.start" = "بدء التوقيع";
 "signing.start.detail" = "راجع الملخص ثم ابدأ التوقيع. سيظهر التقدم والسجلات في الخطوة التالية.";
 "signing.stage.preparing" = "جارٍ التجهيز…";
-"signing.stage.signing" = "جارٍ التوقيع…";
 "signing.stage.done" = "اكتمل التوقيع.";
 "signing.stage.failed" = "فشل التوقيع.";
 "signing.log" = "السجل";
@@ -147,7 +146,9 @@
 "tweaks.analysis.arch" = "المعمارية: %@";
 "tweaks.arch.unknown" = "غير معروف";
 "tweaks.plan.title" = "خطة الحقن";
-"tweaks.plan.empty" = "لم تُختر تعديلات.";
+"tweaks.plan.app" = "التطبيق الهدف";
+"tweaks.plan.compute" = "حساب الخطة";
+"tweaks.plan.selectApp" = "اختر تطبيقًا مستوردًا لحساب خطة الحقن الحقيقية.";
 "tweaks.stock.warning" = "تحذير: تعديلات ElleKit وSubstrate غير مضمون عملها على iOS العادي (غير مكسور الحماية).";
 "downloads.empty" = "لا توجد تنزيلات بعد";
 "downloads.empty.detail" = "الصق رابط HTTPS لملف IPA أعلاه لبدء التنزيل.";
@@ -236,16 +237,11 @@
 "settings.downloads.concurrent" = "أقصى عدد للتنزيلات المتزامنة: %d";
 "settings.section.signing" = "التوقيع";
 "settings.signing.verify" = "التحقق بعد التوقيع";
-"settings.signing.keep" = "الاحتفاظ بملف IPA الأصلي";
 "settings.section.install" = "التثبيت";
 "settings.install.autostart" = "بدء خادم التثبيت تلقائيًا";
 "settings.section.security" = "الأمان";
-"settings.security.passcode" = "طلب رمز المرور لفتح التطبيق";
 "settings.security.details" = "تفاصيل الأمان";
 "settings.security.details.text" = "تُحفظ الشهادات في مجلد مستندات التطبيق. ولا تُحفظ كلمات مرور P12 أو تُسجَّل أبدًا.";
-"settings.section.notifications" = "الإشعارات";
-"settings.notifications.signing" = "اكتمال التوقيع";
-"settings.notifications.downloads" = "اكتمال التنزيلات";
 "settings.section.more" = "المزيد";
 "about.version" = "الإصدار %@ (البناء %@)";
 "about.description" = "يوقّع Ksign Next ملفات IPA ويثبّتها على iOS باستخدام شهاداتك الخاصة.";
@@ -263,8 +259,6 @@
 "install.status" = "الحالة";
 "install.running" = "يعمل";
 "install.stopped" = "متوقف";
-"install.link" = "رابط التثبيت";
-"install.start" = "بدء الخادم";
 "install.stop" = "إيقاف الخادم";
 "install.error.noapp" = "اختر تطبيقًا موقّعًا أولًا.";
 "install.section.export" = "تصدير IPA";
@@ -290,7 +284,6 @@
 "udid.clear" = "إزالة";
 "udid.saved" = "UDID المحفوظ";
 "udid.empty" = "لم يُحفظ UDID بعد.";
-"udid.invalid" = "أدخل UDID من 40 حرفًا (أحرف A–F وأرقام فقط).";
 "udid.help" = "تحتاج آبل إلى UDID جهازك لتسجيله للحصول على ملف جديد. تجده على حاسوبك: صِل الجهاز ثم انقر الرقم التسلسلي الظاهر تحت اسم الجهاز.";
 "udid.auto.note" = "لا يستطيع التطبيق قراءة UDID بنفسه: لا توجد واجهة عامة في iOS لذلك، وحساب آبل المجاني لا يمكنه حمل استحقاق VPN الذي يتطلبه البحث التلقائي.";
 

@@ -383,7 +383,7 @@ public final class AppleRefreshClient: AppleRefreshClientProtocol, @unchecked Se
     public func createSession(config: AppleRefreshSessionConfig) async throws {
         let configText = try config.jsonString()
         try await runBlocking { [self] in
-            var rawSession: UnsafeMutablePointer<AppleRefreshSession>? = nil
+            var rawSession: OpaquePointer? = nil
             let json = try Self.callJSON(step: "session_new") { outJSON in
                 configText.withCString { cConfig in
                     apple_refresh_session_new(cConfig, &rawSession, outJSON)
@@ -394,7 +394,7 @@ public final class AppleRefreshClient: AppleRefreshClientProtocol, @unchecked Se
                     reason: "The Apple Refresh core created no session.")
             }
             self.lock.lock()
-            self.handle = OpaquePointer(rawSession)
+            self.handle = rawSession
             self.closed = false
             self.lock.unlock()
             _ = json
@@ -540,13 +540,13 @@ public final class AppleRefreshClient: AppleRefreshClientProtocol, @unchecked Se
 
     // MARK: - Private helpers
 
-    private func rawSession() throws -> UnsafeMutablePointer<AppleRefreshSession> {
+    private func rawSession() throws -> OpaquePointer {
         lock.lock()
         defer { lock.unlock() }
         guard let handle, !closed else {
             throw AppleRefreshError.internalError(reason: "No live Apple Refresh session.")
         }
-        return UnsafeMutablePointer<AppleRefreshSession>(handle)
+        return handle
     }
 
     private func runBlocking<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
@@ -565,7 +565,7 @@ public final class AppleRefreshClient: AppleRefreshClientProtocol, @unchecked Se
         lock.lock()
         defer { lock.unlock() }
         guard let handle, !closed, inFlight == 0 else { return }
-        apple_refresh_session_free(UnsafeMutablePointer<AppleRefreshSession>(handle))
+        apple_refresh_session_free(handle)
         self.handle = nil
         closed = true
     }

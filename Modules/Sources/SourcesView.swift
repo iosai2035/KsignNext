@@ -18,11 +18,6 @@ struct SourceItem: Identifiable, Equatable, Codable, Hashable {
     }
 }
 
-private struct SourceFeed: Decodable {
-    var apps: [SourceFeedApp]?
-    struct SourceFeedApp: Decodable { var name: String?; var bundleID: String?; var version: String?; var downloadURL: String? }
-}
-
 @MainActor
 final class SourcesViewModel: ObservableObject {
     @Published var sources: [SourceItem] = []
@@ -32,7 +27,22 @@ final class SourcesViewModel: ObservableObject {
     @Published var errorMessage: String?
     private let storageKey = "ksign.sources"
 
-    init() { loadStored() }
+    /// The engine that fetches and parses source documents (public
+    /// source format, validation, 1-hour cache). The view model keeps
+    /// owning the user's source list (UserDefaults persistence); the
+    /// engine owns fetching and parsing — the raw `URLSession` fetch
+    /// and the private feed decoder that used to live here are gone.
+    private let engine: SourcesEngine
+    private let downloadEngine: DownloadEngine
+
+    /// - Parameter container: the app's container; nil builds fresh
+    ///   engines (tests / previews).
+    init(container: DependencyContainer? = nil) {
+        let container = container ?? DependencyContainer()
+        self.engine = container.sourcesEngine
+        self.downloadEngine = container.downloadEngine
+        loadStored()
+    }
 
     private func loadStored() {
         guard let data = UserDefaults.standard.data(forKey: storageKey),
@@ -69,8 +79,9 @@ final class SourcesViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            _ = try JSONDecoder().decode(SourceFeed.self, from: data)
+            // An explicit refresh bypasses the engine's 1-hour cache.
+            await engine.clearCache()
+            _ = try await engine.fetchSource(from: url)
             if let index = sources.firstIndex(where: { $0.id == source.id }) {
                 sources[index].lastRefreshed = Date()
                 persist()
@@ -83,22 +94,40 @@ final class SourcesViewModel: ObservableObject {
     func fetchApps(for source: SourceItem) async -> [SourceListingApp] {
         guard let url = URL(string: source.urlString) else { return [] }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            let feed = try JSONDecoder().decode(SourceFeed.self, from: data)
-            return (feed.apps ?? []).compactMap { app in
-                guard let name = app.name, let downloadURL = app.downloadURL else { return nil }
-                return SourceListingApp(name: name, bundleID: app.bundleID ?? "", version: app.version ?? "", downloadURLString: downloadURL)
+            let altSource = try await engine.fetchSource(from: url)
+            return altSource.apps.compactMap { app in
+                guard let latest = app.versions.first else { return nil }
+                return SourceListingApp(
+                    name: app.name,
+                    bundleID: app.bundleIdentifier,
+                    version: latest.version,
+                    downloadURLString: latest.downloadURL.absoluteString
+                )
             }
         } catch {
             errorMessage = error.localizedDescription
             return []
         }
     }
+
+    /// Queues an app download through the real download engine
+    /// (queue, concurrency limit, progress), so source downloads
+    /// show up in the Downloads tab instead of running as a hidden
+    /// one-off `URLSession` task.
+    func enqueueDownload(url: URL, fileName: String?) async throws -> DownloadTask {
+        try await downloadEngine.enqueue(url: url, fileName: fileName)
+    }
 }
 
 struct SourcesView: View {
-    @StateObject private var viewModel = SourcesViewModel()
+    @StateObject private var viewModel: SourcesViewModel
     @State private var selectedSource: SourceItem?
+
+    /// - Parameter container: the app's container; nil builds fresh
+    ///   engines (tests / previews).
+    init(container: DependencyContainer? = nil) {
+        _viewModel = StateObject(wrappedValue: SourcesViewModel(container: container))
+    }
 
     var body: some View {
         NavigationStack {
@@ -147,7 +176,7 @@ struct SourcesView: View {
             // `navigationDestination(item:)` needs iOS 17; the `isPresented`
             // variant works from iOS 16.
             .navigationDestination(isPresented: Binding(get: { selectedSource != nil }, set: { if !$0 { selectedSource = nil } })) {
-                if let source = selectedSource { SourceDetailView(source: source) }
+                if let source = selectedSource { SourceDetailView(source: source, sourcesModel: viewModel) }
             }
         }
     }

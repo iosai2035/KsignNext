@@ -19,15 +19,29 @@ final class SourceDetailViewModel: ObservableObject {
         apps = await sourcesModel.fetchApps(for: source)
         errorMessage = sourcesModel.errorMessage
     }
+
+    /// Downloads the app through the shared download engine, so the
+    /// download is queued, limited, and visible in the Downloads tab.
+    func downloadApp(_ app: SourceListingApp) async {
+        guard let url = URL(string: app.downloadURLString), url.scheme == "https" else {
+            errorMessage = NSLocalizedString("downloads.error.url", comment: ""); return
+        }
+        do {
+            let fileName = url.lastPathComponent.isEmpty ? "\(app.name).ipa" : url.lastPathComponent
+            _ = try await sourcesModel.enqueueDownload(url: url, fileName: fileName)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
 }
 
 struct SourceDetailView: View {
     let source: SourceItem
     @StateObject private var viewModel: SourceDetailViewModel
 
-    init(source: SourceItem) {
+    init(source: SourceItem, sourcesModel: SourcesViewModel = SourcesViewModel()) {
         self.source = source
-        _viewModel = StateObject(wrappedValue: SourceDetailViewModel(source: source))
+        _viewModel = StateObject(wrappedValue: SourceDetailViewModel(source: source, sourcesModel: sourcesModel))
     }
 
     var body: some View {
@@ -46,7 +60,7 @@ struct SourceDetailView: View {
                         Text(app.name)
                         Text("\(app.bundleID) • \(app.version)").font(.caption).foregroundStyle(.secondary)
                         Button(NSLocalizedString("sources.download", comment: "")) {
-                            download(app)
+                            Task { await viewModel.downloadApp(app) }
                         }
                         .font(.caption)
                         .accessibilityIdentifier("sourceDetail.download.\(app.name)")
@@ -60,23 +74,5 @@ struct SourceDetailView: View {
         .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: Binding(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil } })) {
             Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
         } message: { Text(viewModel.errorMessage ?? "") }
-    }
-
-    private func download(_ app: SourceListingApp) {
-        guard let url = URL(string: app.downloadURLString), url.scheme == "https" else {
-            viewModel.errorMessage = NSLocalizedString("downloads.error.url", comment: "")
-            return
-        }
-        guard let destDir = Workspace.folder("Downloads") else { return }
-        Task {
-            do {
-                let (tempURL, _) = try await URLSession.shared.download(from: url)
-                let dest = destDir.appendingPathComponent(url.lastPathComponent.isEmpty ? "\(app.name).ipa" : url.lastPathComponent)
-                if FileManager.default.fileExists(atPath: dest.path) { try FileManager.default.removeItem(at: dest) }
-                try FileManager.default.moveItem(at: tempURL, to: dest)
-            } catch {
-                viewModel.errorMessage = error.localizedDescription
-            }
-        }
     }
 }

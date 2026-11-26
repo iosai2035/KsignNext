@@ -12,13 +12,41 @@ final class ApplicationDetailViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     let app: StoredApp
+    private let container: DependencyContainer?
 
-    init(app: StoredApp) { self.app = app }
+    /// - Parameter container: the app's container; nil keeps the
+    ///   ZIP-header fallback only (tests / previews).
+    init(app: StoredApp, container: DependencyContainer? = nil) {
+        self.app = app
+        self.container = container
+    }
 
-    /// Inspects the IPA zip in-memory (small header reads only) for Info.plist presence.
-    func inspect() {
+    /// Reads the real metadata from the IPA's Info.plist through the
+    /// IPA engine (bundle id, display name, version, minimum OS,
+    /// executable, architectures). When no container is available —
+    /// or the file is not a readable IPA — falls back to the ZIP
+    /// header check and the file name, with the version labelled
+    /// unknown, exactly as before.
+    func inspect() async {
         isLoading = true
         defer { isLoading = false }
+        if let container {
+            do {
+                let metadata = try await container.ipaEngine.readAppMetadata(at: app.url)
+                inspection = AppInspection(
+                    bundleID: metadata.bundleIdentifier,
+                    displayName: metadata.bundleDisplayName ?? metadata.name,
+                    version: metadata.version,
+                    minimumOS: metadata.minimumOSVersion ?? "",
+                    executable: metadata.executableName ?? "",
+                    architectures: metadata.architectures,
+                    hasEntitlements: false
+                )
+                return
+            } catch {
+                // Fall through to the header check below.
+            }
+        }
         guard let handle = try? FileHandle(forReadingFrom: app.url) else {
             errorMessage = NSLocalizedString("error.file.read", comment: ""); return
         }
@@ -30,29 +58,24 @@ final class ApplicationDetailViewModel: ObservableObject {
         inspection.version = NSLocalizedString("apps.version.unknown", comment: "")
     }
 
-    func signAction() -> SigningUnavailableReason { .backendNotLinked }
     func delete() {
         try? FileManager.default.removeItem(at: app.url)
     }
 }
 
-enum SigningUnavailableReason: LocalizedError {
-    case backendNotLinked
-    var errorDescription: String? { NSLocalizedString("signing.error.backend", comment: "") }
-}
-
 struct ApplicationDetailView: View {
     let app: StoredApp
+    let container: DependencyContainer?
     var onDeleted: () -> Void
     @StateObject private var viewModel: ApplicationDetailViewModel
     @State private var showDeleteConfirm = false
-    @State private var showSignError = false
     @Environment(\.dismiss) private var dismiss
 
-    init(app: StoredApp, onDeleted: @escaping () -> Void) {
+    init(app: StoredApp, container: DependencyContainer? = nil, onDeleted: @escaping () -> Void) {
         self.app = app
+        self.container = container
         self.onDeleted = onDeleted
-        _viewModel = StateObject(wrappedValue: ApplicationDetailViewModel(app: app))
+        _viewModel = StateObject(wrappedValue: ApplicationDetailViewModel(app: app, container: container))
     }
 
     var body: some View {
@@ -65,8 +88,10 @@ struct ApplicationDetailView: View {
                 detailRow(NSLocalizedString("apps.detail.version", comment: ""), viewModel.inspection.version)
             }
             Section(NSLocalizedString("apps.detail.actions", comment: "")) {
-                Button(NSLocalizedString("apps.action.sign", comment: "")) { showSignError = true }
-                    .accessibilityIdentifier("appDetail.sign")
+                NavigationLink(NSLocalizedString("apps.action.sign", comment: "")) {
+                    SigningCenterView(container: container, preselectedAppName: app.url.lastPathComponent)
+                }
+                .accessibilityIdentifier("appDetail.sign")
                 ShareLink(item: app.url, preview: SharePreview(app.name)) {
                     Label(NSLocalizedString("common.export", comment: ""), systemImage: "square.and.arrow.up")
                 }
@@ -81,10 +106,7 @@ struct ApplicationDetailView: View {
         }
         .navigationTitle(app.name)
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { viewModel.inspect() }
-        .alert(NSLocalizedString("signing.error.title", comment: ""), isPresented: $showSignError) {
-            Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) {}
-        } message: { Text(SigningUnavailableReason.backendNotLinked.localizedDescription) }
+        .task { await viewModel.inspect() }
         .alert(NSLocalizedString("common.delete.confirm", comment: ""), isPresented: $showDeleteConfirm) {
             Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) {
                 viewModel.delete(); onDeleted(); dismiss()

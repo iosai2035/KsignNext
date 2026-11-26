@@ -98,6 +98,14 @@ final class SigningCenterViewModel: ObservableObject {
         self.verificationEngine = verificationEngine ?? container.verificationEngine
     }
 
+    /// The Settings toggle `ksign.signing.verifyAfterSign` (default
+    /// true): when on, the engine verifies the signature inside the
+    /// signing run in addition to the wizard's explicit verification
+    /// step.
+    private var verifyAfterSigningEnabled: Bool {
+        UserDefaults.standard.object(forKey: "ksign.signing.verifyAfterSign") as? Bool ?? true
+    }
+
     var availableApps: [String] { listNames(folder: "ImportedApps", ext: "ipa") }
     var availableCertificates: [String] { listNames(folder: "Certificates", ext: nil) }
     var availableProvisions: [String] { listNames(folder: "Certificates", ext: "mobileprovision") }
@@ -256,10 +264,11 @@ final class SigningCenterViewModel: ObservableObject {
             displayName: appName.isEmpty ? nil : appName,
             version: appVersion.isEmpty ? nil : appVersion,
             entitlementsURL: entitlementsURL,
-            // The wizard verifies explicitly in the verification step
-            // (verifySignedApp), so the engine is not asked to verify
-            // inside the signing run.
-            verifyAfterSigning: false,
+            // The wizard also verifies explicitly in the verification
+            // step (verifySignedApp). The Settings toggle
+            // `ksign.signing.verifyAfterSign` asks the engine to
+            // verify inside the signing run as well.
+            verifyAfterSigning: verifyAfterSigningEnabled,
             injectionFiles: injectionFiles
         )
         return SigningRequest(
@@ -318,8 +327,13 @@ struct SigningCenterView: View {
 
     /// - Parameter container: the app's container (from the
     ///   coordinator); nil builds a fresh one (tests / previews).
-    init(container: DependencyContainer? = nil) {
-        _viewModel = StateObject(wrappedValue: SigningCenterViewModel(container: container))
+    /// - Parameter preselectedAppName: file name (with extension) of
+    ///   an imported IPA to pre-select in the wizard, e.g. when coming
+    ///   from an app's detail screen. Nil starts with no app chosen.
+    init(container: DependencyContainer? = nil, preselectedAppName: String? = nil) {
+        let viewModel = SigningCenterViewModel(container: container)
+        if let preselectedAppName { viewModel.selectedAppName = preselectedAppName }
+        _viewModel = StateObject(wrappedValue: viewModel)
     }
 
     var body: some View {
