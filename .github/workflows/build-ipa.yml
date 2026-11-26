@@ -113,7 +113,7 @@ jobs:
       timeout-minutes: 30
       run: |
         set -o pipefail
-        xcodebuild build-for-testing -project KsignNext.xcodeproj -scheme KsignNext -destination 'platform=iOS Simulator,id=${{ env.SIM_UDID}}' -only-testing:KsignNextTests ONLY_ACTIVE_ARCH=YES 2>&1 | tee build/test.log
+        xcodebuild build-for-testing -project KsignNext.xcodeproj -scheme KsignNext -destination 'platform=iOS Simulator,id=${{ env.SIM_UDID }}' -only-testing:KsignNextTests ONLY_ACTIVE_ARCH=YES 2>&1 | tee build/test.log
     - name: Run unit + integration + security tests
       timeout-minutes: 30
       run: |
@@ -131,7 +131,7 @@ jobs:
         print("Simulator ready:", udid)
         PY
         set -o pipefail
-        xcodebuild test-without-building -project KsignNext.xcodeproj -scheme KsignNext -destination 'platform=iOS Simulator,id=${{ env.SIM_UDID}}' -only-testing:KsignNextTests ONLY_ACTIVE_ARCH=YES 2>&1 | tee -a build/test.log
+        xcodebuild test-without-building -project KsignNext.xcodeproj -scheme KsignNext -destination 'platform=iOS Simulator,id=${{ env.SIM_UDID }}' -only-testing:KsignNextTests ONLY_ACTIVE_ARCH=YES 2>&1 | tee -a build/test.log
 
       - name: Archive (Release, unsigned for SideStore)
       run: |
