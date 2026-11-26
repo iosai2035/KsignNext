@@ -76,7 +76,7 @@ public enum Validators {
 
     /// Normalizes a pasted UDID: strips all whitespace and uppercases.
     /// Returns nil unless the result is exactly 40 hex characters
-    /// (the UDID format Finder / iTunes / 3uTools / udid.io show).
+    /// (the UDID format shown by the computer the device is connected to).
     /// Uppercase and lowercase input are both accepted.
     public static func normalizedDeviceUDID(_ value: String) -> String? {
         let normalized = value.components(separatedBy: .whitespacesAndNewlines)

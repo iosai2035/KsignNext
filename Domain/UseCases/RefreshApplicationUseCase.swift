@@ -4,7 +4,7 @@ import Foundation
 //
 // In-app refresh: re-sign a signed app with the same certificate and
 // provisioning profile it was signed with, then the caller installs
-// the fresh file over loopback (no Wi-Fi, no SideStore, no computer).
+// the fresh file over loopback (no Wi-Fi, no external installer, no computer).
 //
 // The profile is read from the signed IPA itself
 // (`embedded.mobileprovision` inside the app bundle), so the exact

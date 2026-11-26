@@ -21,9 +21,9 @@ import Foundation
 //    single IPA + manifest + icons for the install in progress (no
 //    directory listing, no access to other user files), and shuts down
 //    after the install or after the timeout.
-// 2. SideStore export (`exportForSideStore`): produces a valid signed IPA
-//    file in the Files-visible `Documents/SideStoreExports` folder, plus a
-//    `SideStoreGuide` (ordered steps as data) explaining the import.
+// 2. IPA export (`exportIPA`): produces a valid signed IPA file in
+//    the Files-visible `Documents/IPAExports` folder, plus an
+//    `ExternalInstallerGuide` (ordered steps as data) explaining the import.
 // 3. iDevice (USB) install: NOT available from a normal stock-iOS app.
 //    `IDeviceAdapterProtocol` exists so the UI can show the option honestly
 //    as unsupported (`UnavailableIDeviceAdapter`); nothing here pretends
@@ -57,7 +57,7 @@ public enum InstallationError: Error, LocalizedError, Equatable {
         case .serverStartFailed(let detail):
             return "Could not start the installation server: \(detail)"
         case .exportFailed(let detail):
-            return "SideStore export failed: \(detail)"
+            return "IPA export failed: \(detail)"
         case .iDeviceUnavailable(let detail):
             return "USB install is not available: \(detail)"
         }
@@ -150,13 +150,13 @@ public final class UnsupportedInstallationServer: InstallationServerProtocol, @u
 
     public func start(serving files: [InstallationServerFile], timeout: TimeInterval) async throws -> URL {
         throw InstallationError.serverUnavailable(
-            "The local installation server needs SwiftNIO, which is not linked in this build. Use the SideStore export instead."
+            "The local installation server needs SwiftNIO, which is not linked in this build. Use the IPA export instead."
         )
     }
 
     public func serve(file: InstallationServerFile) async throws {
         throw InstallationError.serverUnavailable(
-            "The local installation server needs SwiftNIO, which is not linked in this build. Use the SideStore export instead."
+            "The local installation server needs SwiftNIO, which is not linked in this build. Use the IPA export instead."
         )
     }
 
@@ -228,7 +228,7 @@ public enum InstallDestination: Sendable {
 
 // MARK: - Engine
 
-/// Coordinates the three install paths: local-server install, SideStore
+/// Coordinates the three install paths: local-server install, IPA
 /// export, and the (unsupported) iDevice path.
 public final class InstallationEngine: @unchecked Sendable {
 
@@ -390,21 +390,21 @@ public final class InstallationEngine: @unchecked Sendable {
         await server.stop()
     }
 
-    // MARK: SideStore export
+    // MARK: IPA export
 
-    /// Copies a signed IPA into the Files-visible SideStore exports folder
+    /// Copies a signed IPA into the Files-visible IPA exports folder
     /// and returns the export record (file URL, name, size, date).
-    public func exportForSideStore(ipaURL: URL, fileName: String? = nil) throws -> SideStoreExport {
+    public func exportIPA(ipaURL: URL, fileName: String? = nil) throws -> IPAExport {
         do {
-            return try SideStoreExporter.export(ipaURL: ipaURL, fileName: fileName)
+            return try IPAExporter.export(ipaURL: ipaURL, fileName: fileName)
         } catch {
             throw InstallationError.exportFailed(error.localizedDescription)
         }
     }
 
-    /// The ordered SideStore import guide (steps as data, not UI).
-    public func sideStoreGuide() -> SideStoreGuide {
-        SideStoreGuide.standard()
+    /// The ordered external-installer import guide (steps as data, not UI).
+    public func installerGuide() -> ExternalInstallerGuide {
+        ExternalInstallerGuide.standard()
     }
 
     // MARK: iDevice (USB)

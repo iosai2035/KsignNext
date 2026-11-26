@@ -26,15 +26,15 @@ actor TwoFactorPromptGate {
 }
 
 enum AppleIDClaimChoice: String, CaseIterable {
-    case automatic, sideinstaller, apparition, server
+    case automatic, macos10157, macos27, server
 
     var titleKey: String { "appleid.claim.\(rawValue)" }
 
     var claim: AppleRefreshClaim? {
         switch self {
         case .automatic: return nil
-        case .sideinstaller: return .sideinstaller
-        case .apparition: return .apparition
+        case .macos10157: return .sideinstaller
+        case .macos27: return .apparition
         case .server: return .server
         }
     }

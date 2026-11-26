@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - SourcesEngine
 //
-// AltStore-format source support, implemented from the public format
+// public-format source support, implemented from the public format
 // description. No AltSourceKit code is used.
 //
 // DOCUMENTED DEVIATION: the §14 SourcesEngine is not in the §4 folder
@@ -127,7 +127,7 @@ extension DownloadEngine: SourceDownloadEngine {
 
 // MARK: - Engine
 
-/// Fetches, parses, caches, and lists AltStore-format sources, and hands
+/// Fetches, parses, caches, and lists public-format sources, and hands
 /// app downloads to a `SourceDownloadEngine`.
 public actor SourcesEngine {
 
@@ -328,7 +328,7 @@ public actor SourcesEngine {
     // MARK: Download
 
     /// Downloads an app version through the download engine. When `version`
-    /// is nil the newest version is used. The AltStore format carries no
+    /// is nil the newest version is used. The The source format carries no
     /// hash, so no hash is passed for verification; the downloaded file is
     /// still validated by HTTP status and Content-Length in DownloadEngine.
     /// The file is only downloaded — never executed.

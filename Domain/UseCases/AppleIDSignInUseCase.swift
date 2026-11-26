@@ -1,8 +1,7 @@
 import Foundation
 
 /// Drives a Phase 1 Apple ID sign-in through the Rust core and owns
-/// the retry + backoff policy (design §5.5, research doc §7, AltLoad
-/// rules):
+/// the retry + backoff policy (design §5.5, research doc §7):
 ///
 /// Attempt order — the claim is the variable Apple reacts to, so the
 /// claims are tried first: `sideinstaller` (macOS 10.15.7, "Mac OS

@@ -24,6 +24,8 @@ final class InstallationViewModel: ObservableObject {
     @Published var signatureExpiryText: String?
     @Published var signatureExpired = false
     @Published var appleIDEmail: String?
+    @Published var exportedURL: URL?
+    private var lastExportedApp = ""
     @Published var isRefreshing = false
     @Published var refreshStatus = ""
 
@@ -78,6 +80,7 @@ final class InstallationViewModel: ObservableObject {
         let items = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         signedApps = items.filter { $0.pathExtension.lowercased() == "ipa" }.map(\.lastPathComponent).sorted()
         if selectedApp.isEmpty { selectedApp = signedApps.first ?? "" }
+        if selectedApp != lastExportedApp { exportedURL = nil }
         appleIDEmail = container?.appleIDSessionStore.loadSession()?.email
         Task { await loadSignatureExpiry() }
     }
@@ -251,13 +254,22 @@ final class InstallationViewModel: ObservableObject {
         installBackgroundTaskID = .invalid
     }
 
-    var sideStoreSteps: [String] {
-        (1...5).map { String(format: NSLocalizedString("install.sidestore.step", comment: ""), $0) }
-    }
+    var installerGuide: ExternalInstallerGuide { installationEngine.installerGuide() }
 
-    func sideStoreExportURL() -> URL? {
-        guard !selectedApp.isEmpty, let docs = Workspace.documents else { return nil }
-        return docs.appendingPathComponent("SignedApps/\(selectedApp)")
+    /// Copies the selected signed IPA into the Files-visible
+    /// IPAExports folder. A numbered name is used when the file
+    /// already exists; the ShareLink shares the exported copy.
+    func exportSelectedApp() {
+        guard !selectedApp.isEmpty, let docs = Workspace.documents else { return }
+        let ipaURL = docs.appendingPathComponent("SignedApps/\(selectedApp)")
+        do {
+            let record = try installationEngine.exportIPA(ipaURL: ipaURL)
+            exportedURL = record.fileURL
+            lastExportedApp = selectedApp
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }
 
@@ -337,19 +349,35 @@ struct InstallationView: View {
                 }
             }
             DeviceUDIDSection(store: viewModel.udidStore)
-            Section(NSLocalizedString("install.section.sidestore", comment: "")) {
-                if let url = viewModel.sideStoreExportURL() {
-                    ShareLink(item: url, preview: SharePreview(viewModel.selectedApp)) {
-                        Label(NSLocalizedString("install.sidestore.export", comment: ""), systemImage: "square.and.arrow.up")
-                    }
-                    .accessibilityIdentifier("install.sidestoreExport")
-                } else {
+            Section(NSLocalizedString("install.section.export", comment: "")) {
+                if viewModel.selectedApp.isEmpty {
                     Text(NSLocalizedString("install.error.noapp", comment: "")).foregroundStyle(.secondary)
+                } else {
+                    Button(NSLocalizedString("install.export", comment: "")) { viewModel.exportSelectedApp() }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("install.export")
+                    if let url = viewModel.exportedURL {
+                        ShareLink(item: url, preview: SharePreview(viewModel.selectedApp)) {
+                            Label(NSLocalizedString("install.export.share", comment: ""), systemImage: "square.and.arrow.up")
+                        }
+                        .accessibilityIdentifier("install.exportShare")
+                    }
                 }
-                ForEach(viewModel.sideStoreSteps.indices, id: \.self) { index in
-                    Text(viewModel.sideStoreSteps[index]).font(.caption)
+                Text(viewModel.installerGuide.introduction)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(viewModel.installerGuide.steps) { step in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(step.order). \(step.title)").font(.caption).bold()
+                        Text(step.detail).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
-                Text(NSLocalizedString("install.sidestore.wifi", comment: ""))
+                ForEach(viewModel.installerGuide.limits, id: \.name) { limit in
+                    Text("\(limit.name): \(limit.value) — \(limit.note)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text(NSLocalizedString("install.export.wifi", comment: ""))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

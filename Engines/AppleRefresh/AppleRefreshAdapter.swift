@@ -104,7 +104,7 @@ public enum AppleRefreshError: LocalizedError, Equatable {
 
 /// Which `X-MMe-Client-Info` the Rust core presents to Apple.
 /// Try `sideinstaller` first (macOS 10.15.7, still calls itself
-/// "Mac OS X" — AltStore PR #1875: Apple lets that through while
+/// "Mac OS X" — Apple lets that through while
 /// `<macOS;…>` claims get a 503), then `apparition` (macOS 27),
 /// then the anisette server's own claim. Exact strings: design §5.3.
 public enum AppleRefreshClaim: Equatable, Sendable {

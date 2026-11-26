@@ -20,7 +20,7 @@ public struct AppleIDSession: Equatable, Sendable, Codable {
     }
 }
 
-/// Persists the Apple ID sign-in state and the AltLoad backoff rules
+/// Persists the Apple ID sign-in state and the backoff rules
 /// (research doc §7):
 /// - the password lives in the Keychain only, under
 ///   `appleid-password-<email>`; a rejected password is removed.
@@ -43,7 +43,7 @@ public final class AppleIDSessionStore: @unchecked Sendable {
     private static let lastClaimKey = "ksign.appleid.lastClaim"
     private static let lastServerKey = "ksign.appleid.lastServer"
 
-    /// Backoff pause after repeated rejections (AltLoad rule).
+    /// Backoff pause after repeated rejections.
     public static let pauseDuration: TimeInterval = 15 * 60
 
     private let keychain: KeychainService
@@ -115,7 +115,7 @@ public final class AppleIDSessionStore: @unchecked Sendable {
         try? keychain.delete(account: Self.passwordAccount(for: email))
     }
 
-    // MARK: - Backoff (AltLoad rules)
+    // MARK: - Backoff
 
     public func recordRejection() -> Int {
         let count = defaults.integer(forKey: Self.rejectionsKey) + 1

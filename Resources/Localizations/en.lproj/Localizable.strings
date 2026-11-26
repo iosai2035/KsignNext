@@ -267,14 +267,14 @@
 "install.start" = "Start server";
 "install.stop" = "Stop server";
 "install.error.noapp" = "Select a signed app first.";
-"install.section.sidestore" = "SideStore";
-"install.sidestore.export" = "Export IPA for SideStore";
-"install.sidestore.step" = "Step %d: open SideStore, import the exported IPA, and install it from My Apps.";
+"install.section.export" = "Export IPA";
+"install.export.share" = "Share exported IPA";
 "install.thisdevice" = "Install on this device";
 "install.thisdevice.note" = "Works without Wi-Fi — the install runs on this device itself.";
 "install.otherdevice" = "Install on another device";
 "install.otherdevice.note" = "Needs Wi-Fi: the other device opens the link on the same network.";
-"install.sidestore.wifi" = "SideStore itself needs Wi-Fi to install.";
+"install.export.wifi" = "Installing with an external installer may need Wi-Fi, depending on the installer.";
+"install.export" = "Export IPA";
 "install.refresh" = "Re-sign";
 "install.refreshing" = "Re-signing…";
 "install.refresh.installing" = "Installing re-signed app…";
@@ -291,7 +291,7 @@
 "udid.saved" = "Saved UDID";
 "udid.empty" = "No UDID saved yet.";
 "udid.invalid" = "Enter the 40-character UDID (letters A–F and digits only).";
-"udid.help" = "Apple needs your device's UDID to register it for a fresh profile. Find it in Finder (click the serial number under your device name), in iTunes, in 3uTools, or at udid.io.";
+"udid.help" = "Apple needs your device's UDID to register it for a fresh profile. Find it on your computer: connect the device, then click the serial number shown under the device name.";
 "udid.auto.note" = "The app cannot read the UDID itself: iOS has no public API for it, and a free Apple ID cannot carry the VPN entitlement an automatic lookup would need.";
 
 "general.cancel" = "Cancel";
@@ -305,8 +305,8 @@
 "appleid.server" = "Anisette server";
 "appleid.claim" = "Sign-in claim";
 "appleid.claim.automatic" = "Automatic (recommended)";
-"appleid.claim.sideinstaller" = "SideInstaller — macOS 10.15.7";
-"appleid.claim.apparition" = "Apparition — macOS 27";
+"appleid.claim.macos10157" = "macOS 10.15.7 claim";
+"appleid.claim.macos27" = "macOS 27 claim";
 "appleid.claim.server" = "Anisette server's claim";
 "appleid.server.custom" = "Custom anisette server";
 "appleid.server.invalid" = "Enter a valid https anisette server URL.";
@@ -318,7 +318,7 @@
 "appleid.token.proven" = "Xcode token proven";
 "appleid.refresh.note" = "This sign-in is what the real refresh will use to fetch a fresh profile from Apple (Phase 2). It does not change anything about the apps already installed.";
 "appleid.secondary.warning" = "Use a secondary Apple ID for testing, not your main one. Apple may temporarily lock an account after repeated failed sign-ins, and the app sends your real password to Apple only — it is stored in the Keychain on this device and never anywhere else.";
-"appleid.howitworks" = "Sign-in goes to Apple through a public anisette server (the server never sees your Apple ID, password, or verification code). The app first tries the SideInstaller claim (macOS 10.15.7), then Apparition (macOS 27), then the server's own claim. If Apple still refuses with -22410, sign-in is broken by Apple's change and no claim or server will help yet.";
+"appleid.howitworks" = "Sign-in goes to Apple through a public anisette server (the server never sees your Apple ID, password, or verification code). The app first tries the macOS 10.15.7 claim, then the macOS 27 claim, then the server's own claim. If Apple still refuses with -22410, sign-in is broken by Apple's change and no claim or server will help yet.";
 "appleid.2fa.title" = "Two-factor authentication";
 "appleid.2fa.prompt" = "Apple sent a verification code. Enter it below.";
 "appleid.2fa.choose" = "Where should Apple send the code?";

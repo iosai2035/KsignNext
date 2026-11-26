@@ -2,11 +2,11 @@ import Foundation
 
 // MARK: - SourceModels
 //
-// Codable models for the AltStore source format, implemented from the
+// Codable models for the public source format, implemented from the
 // public format description (a JSON document with `name`, `identifier`,
 // `apps`, and `news`). No AltSourceKit code is used here.
 //
-// AltStore dates are ISO-8601 strings, with or without fractional seconds,
+// Source dates are ISO-8601 strings, with or without fractional seconds,
 // so every date field is decoded from a string with a tolerant parser
 // instead of relying on `JSONDecoder`'s date strategy. Encoding writes the
 // same ISO-8601 string form back, so a decoded model re-encodes to valid
@@ -14,7 +14,7 @@ import Foundation
 
 // MARK: - Date parsing
 
-/// Tolerant ISO-8601 parsing for AltStore date strings such as
+/// Tolerant ISO-8601 parsing for source date strings such as
 /// `2024-01-15T10:30:00Z` and `2024-01-15T10:30:00.000Z`.
 public enum AltSourceDateParsing {
 
@@ -48,7 +48,7 @@ public enum AltSourceDateParsing {
 
 // MARK: - Top-level source
 
-/// One AltStore-format source document.
+/// One public-format source document.
 public struct AltSource: Codable, Sendable, Equatable {
     public let name: String
     public let identifier: String
