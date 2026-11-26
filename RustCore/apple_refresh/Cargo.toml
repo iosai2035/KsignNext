@@ -1,0 +1,46 @@
+[package]
+name = "apple_refresh"
+version = "0.1.0"
+edition = "2021"
+description = "Ksign Next Apple ID sign-in core (isideload FFI)"
+license = "MIT"
+
+[lib]
+name = "apple_refresh"
+crate-type = ["staticlib"]
+
+[dependencies]
+# isideload 0.5.2, pinned to the exact release commit (design doc §1).
+# git+rev (not crates.io) so a later fork commit carrying a one-line
+# patch (e.g. the Content-Type fix, §9 Q1) can be pointed at without
+# republishing anything. Features: `install` is MANDATORY (isideload
+# uses idevice unconditionally — finding F1, §2); `tokio-mt` is
+# mandatory (multi-thread runtime + provisioning WebSocket);
+# `keyring-storage` is deliberately OFF — our crate supplies its own
+# file-backed SideloadingStorage (src/storage.rs), AltLoad-style.
+isideload = { git = "https://github.com/nab138/isideload",
+              rev = "326e56229d0727cb6e7b34c8cf03e37e2cd3e17d",
+              default-features = false,
+              features = ["install", "tokio-mt"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hmac = "0.13"
+sha2 = "0.11"
+aes-gcm = "0.11"
+plist = "1"
+reqwest = { version = "0.13", default-features = false,
+            features = ["rustls-no-provider"] }
+reqwest-middleware = "0.5"
+rustls = { version = "0.23", default-features = false,
+           features = ["ring", "tls12", "std"] }
+zeroize = "1"
+# Deviation from the design doc §6.1 Cargo.toml (which omits it):
+# rootcause is required to walk isideload's error-report chain
+# (iter_reports + downcast_current_context::<SideloadError>) as §4/§6.2
+# specify. Same major version isideload itself uses (0.12); pinned by
+# the committed Cargo.lock.
+rootcause = "0.12"
+
+[profile.release]
+panic = "abort"

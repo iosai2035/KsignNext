@@ -134,6 +134,31 @@ def main():
     a("\tobjectVersion = 56;")
     a("\tobjects = {")
 
+    # Rust Apple-refresh core (Phase 1 FFI): the XCFramework is BUILT
+    # on CI (Scripts/build_rust_core.sh / the workflow step) before
+    # this generator runs, and is never committed. Link it into the
+    # app target when it exists on disk; REQUIRE_RUST_XCFRAMEWORK=1
+    # (set by CI) makes a missing XCFramework a hard error instead of
+    # a warning, so a failed Rust build cannot silently produce an
+    # app without the sign-in core.
+    xcframework_rel = "RustCore/AppleRefresh.xcframework"
+    xcframework_dir = os.path.join(ROOT, xcframework_rel)
+    xcframework_present = (
+        os.path.isdir(xcframework_dir)
+        and os.path.isfile(os.path.join(xcframework_dir, "Info.plist"))
+    )
+    require_xcframework = os.environ.get("REQUIRE_RUST_XCFRAMEWORK") == "1"
+    if xcframework_present:
+        print(f"Rust XCFramework found: {xcframework_rel}")
+    elif require_xcframework:
+        print(f"ERROR: {xcframework_rel} not found — build the Rust core first "
+              f"(Scripts/build_rust_core.sh).")
+        sys.exit(1)
+    else:
+        print(f"WARNING: {xcframework_rel} not found — generating project without "
+              f"the Rust Apple-refresh core (set REQUIRE_RUST_XCFRAMEWORK=1 to "
+              f"make this an error).")
+
     build_files, file_refs = [], []
 
     def add_file(rel, last_type=None):
@@ -195,6 +220,23 @@ def main():
     for rel in ui_src:
         _f, b = add_file(rel)
         ui_build.append(b)
+    # The Rust XCFramework links into the app target's Frameworks
+    # phase (a static library — linked, not embedded, so there is no
+    # Embed Frameworks phase for it). It is a file reference only
+    # here; its build-file id is appended to the Frameworks phase
+    # below.
+    xc_build = []
+    if xcframework_present:
+        xfid = stable_id("fileref:" + xcframework_rel)
+        xbid = stable_id("buildfile:" + xcframework_rel)
+        file_refs.append(
+            f'\t\t{xfid} /* AppleRefresh.xcframework */ = {{isa = PBXFileReference; '
+            f'explicitFileType = wrapper.xcframework; path = AppleRefresh.xcframework; '
+            f'sourceTree = "<group>"; }};')
+        build_files.append(
+            f'\t\t{xbid} /* AppleRefresh.xcframework in Frameworks */ = {{isa = PBXBuildFile; '
+            f'fileRef = {xfid} /* AppleRefresh.xcframework */; }};')
+        xc_build.append(xbid)
 
     # SPM package references (one per repo url)
     pkg_refs, pkg_products = [], []
@@ -222,7 +264,8 @@ def main():
         return stable_id("group:" + path)
 
     groups = []
-    all_files = app_src + app_cpp + app_res + test_src + ui_src + app_headers
+    all_files = (app_src + app_cpp + app_res + test_src + ui_src + app_headers
+                 + ([xcframework_rel] if xcframework_present else []))
     # Every directory that contains files AND every ancestor of such a
     # directory needs a PBXGroup. A top-level dir like Core/ or Tests/
     # that holds only subdirectories still gets referenced as a child
@@ -303,6 +346,8 @@ def main():
         # PBXReference" (verified live in CI run 9, 2026-11-23).
         a(f'\t\t{fid} /* {esc(product)} in Frameworks */ = {{isa = PBXBuildFile; '
           f'productRef = {did} /* {esc(product)} */; }};')
+    # The Rust XCFramework links alongside the SPM products.
+    fw_files.extend(xc_build)
     phase(app_fw_phase, "Frameworks", "PBXFrameworksBuildPhase", fw_files)
     phase(test_fw_phase, "Frameworks", "PBXFrameworksBuildPhase", [])
     phase(ui_fw_phase, "Frameworks", "PBXFrameworksBuildPhase", [])
@@ -409,7 +454,10 @@ def main():
         # (verified live in CI run 10, 2026-11-23). Real projects set
         # SDKROOT = iphoneos on their iOS targets.
         "SDKROOT": "iphoneos",
-        "SWIFT_OBJC_BRIDGING_HEADER": "Engines/SigningEngine/ZsignBridge.h",
+        # Umbrella bridging header (SupportingFiles/): it re-exports
+        # ZsignBridge.h and AppleRefreshBridge.h. The Rust header
+        # resolves through HEADER_SEARCH_PATHS below.
+        "SWIFT_OBJC_BRIDGING_HEADER": "SupportingFiles/KsignNext-Bridging-Header.h",
         "SWIFT_VERSION": "5.0",
         # The vendored zsign C++ sources build with -std=c++11 upstream
         # (see research/references/zsign/build/macos/Makefile); keep
@@ -419,12 +467,24 @@ def main():
         # zsign's quoted includes ("common.h", "minizip/zip.h",
         # "zlib.h") resolve through these directories; <openssl/...>
         # comes from the OpenSSL-Package XCFramework linked below.
-        "HEADER_SEARCH_PATHS": '"$(inherited) $(SRCROOT)/Engines/SigningEngine/zsign $(SRCROOT)/Engines/SigningEngine/zsign/common $(SRCROOT)/Engines/SigningEngine/zsign/third-party $(SRCROOT)/Engines/SigningEngine/zsign/third-party/zlib"',
+        # $(SRCROOT)/Engines/SigningEngine lets the umbrella bridging
+        # header find ZsignBridge.h; $(SRCROOT)/RustCore/... lets it
+        # find AppleRefreshBridge.h (the repo copy is the source of
+        # truth; the XCFramework copy is for portability).
+        "HEADER_SEARCH_PATHS": '"$(inherited) $(SRCROOT)/Engines/SigningEngine/zsign $(SRCROOT)/Engines/SigningEngine/zsign/common $(SRCROOT)/Engines/SigningEngine/zsign/third-party $(SRCROOT)/Engines/SigningEngine/zsign/third-party/zlib $(SRCROOT)/Engines/SigningEngine $(SRCROOT)/RustCore/apple_refresh/include"',
         # minizip (used by zsign's Zip::Archive/Extract) calls zlib,
         # but only its headers are vendored — the implementation is the
         # system libz that ships in the iOS SDK, so the 1.3 MB of
         # vendored zlib sources are not in the repo.
-        "OTHER_LDFLAGS": '"$(inherited) -lz"',
+        # The Rust Apple-refresh core additionally needs the system
+        # frameworks its transitive deps link against (design §8.3.3):
+        # Security — getrandom (SecRandomCopyBytes) + security-framework
+        # (rustls platform verifier + TLS); SystemConfiguration —
+        # reqwest system-proxy; CoreFoundation — security-framework /
+        # core-foundation bindings. No -lc++ is needed for the Rust
+        # static library itself (pure Rust + C from ring); the app
+        # already links libc++ for zsign.
+        "OTHER_LDFLAGS": '"$(inherited) -lz -framework Security -framework SystemConfiguration -framework CoreFoundation"',
         "SWIFT_STRICT_CONCURRENCY": "complete",
         "TARGETED_DEVICE_FAMILY": '"1,2"',
     }

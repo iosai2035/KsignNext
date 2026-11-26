@@ -17,3 +17,6 @@ Package.resolved
 # Local signing overrides (user's own, never shared)
 ExportOptions.local.plist
 *.local.plist
+# Rust Apple-refresh core (built on CI, never committed — design §8.2)
+RustCore/AppleRefresh.xcframework/
+RustCore/apple_refresh/target/

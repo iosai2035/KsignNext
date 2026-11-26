@@ -1,0 +1,7 @@
+# Pinned Rust toolchain for the Apple-refresh core (Phase 1 FFI design §8.1).
+# Floor: Rust >= 1.85 (isideload is edition 2024).
+# TODO(Q6): record `rustc --version` from the first green CI run and pin the
+# exact version here (e.g. channel = "1.9x.y").
+[toolchain]
+channel = "stable"
+targets = ["aarch64-apple-ios", "aarch64-apple-ios-sim", "x86_64-apple-ios-sim"]
