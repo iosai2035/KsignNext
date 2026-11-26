@@ -188,10 +188,14 @@ struct FileManagerView: View {
         .navigationTitle(viewModel.currentDirectory.lastPathComponent)
         .dsInlineTitle()
         .searchable(text: $viewModel.searchText, prompt: NSLocalizedString("files.search", comment: ""))
-        .navigationDestination(item: $viewModel.destination) { destination in
-            switch destination {
-            case .hex(let url): HexEditorView(fileURL: url)
-            case .plist(let url): PlistEditorView(fileURL: url)
+        // `navigationDestination(item:)` needs iOS 17; the `isPresented`
+        // variant works from iOS 16.
+        .navigationDestination(isPresented: Binding(get: { viewModel.destination != nil }, set: { if !$0 { viewModel.destination = nil } })) {
+            if let destination = viewModel.destination {
+                switch destination {
+                case .hex(let url): HexEditorView(fileURL: url)
+                case .plist(let url): PlistEditorView(fileURL: url)
+                }
             }
         }
         .toolbar {
