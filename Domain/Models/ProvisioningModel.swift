@@ -80,7 +80,9 @@ public struct ProvisioningModel: Codable, Equatable, Identifiable {
         if allowed == "*" { return true }
         if allowed.hasSuffix(".*") {
             let prefix = String(allowed.dropLast(2))
-            return bundleID.hasPrefix(prefix)
+            // The wildcard needs a real sub-identifier: "com.example.*"
+            // allows "com.example.foo" but NOT "com.exampleFoo".
+            return bundleID.hasPrefix(prefix + ".")
         }
         return allowed == bundleID
     }

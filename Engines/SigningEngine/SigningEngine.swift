@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 /// Full signing pipeline: prepare → validate → edit Info.plist →
 /// remove old signature → inject tweaks → sign nested bundles →
@@ -17,11 +18,13 @@ public actor SigningEngine: SigningEngineProtocol {
 
     public typealias CertificateResolver = @Sendable (UUID) async -> CertificateModel?
     public typealias ProvisioningResolver = @Sendable (UUID) async -> ProvisioningModel?
+    public typealias PasswordResolver = @Sendable (UUID) async -> String?
 
     private let adapter: ZsignAdapter
     private let injectionEngine: InjectionEngine
     private let certificateResolver: CertificateResolver?
     private let provisioningResolver: ProvisioningResolver?
+    private let passwordResolver: PasswordResolver?
     private let p12Password: String?
     private let fileManager = FileManager.default
 
@@ -33,6 +36,7 @@ public actor SigningEngine: SigningEngineProtocol {
         backend: any ZsignBackend = ZsignBridgeBackend(),
         certificateResolver: CertificateResolver? = nil,
         provisioningResolver: ProvisioningResolver? = nil,
+        passwordResolver: PasswordResolver? = nil,
         p12Password: String? = nil
     ) {
         let adapter = ZsignAdapter(backend: backend)
@@ -40,6 +44,7 @@ public actor SigningEngine: SigningEngineProtocol {
         self.injectionEngine = InjectionEngine(adapter: adapter)
         self.certificateResolver = certificateResolver
         self.provisioningResolver = provisioningResolver
+        self.passwordResolver = passwordResolver
         self.p12Password = p12Password
     }
 
@@ -177,6 +182,10 @@ public actor SigningEngine: SigningEngineProtocol {
             try await validate(request, workspace: workspace)
             let config = request.configuration
             let (certificate, profile) = try await resolveInputs(for: request)
+            let p12Password = await resolvePassword(for: config.certificateID)
+            if let certificate, let p12URL = certificate.fileURL, !config.doAdhocSigning {
+                try verifyP12Password(p12URL: p12URL, password: p12Password)
+            }
 
             emit(.removingSignature, 0.25, "Updating Info.plist and removing the old signature…")
             try updateInfoPlist(at: appURL, config: config)
@@ -188,10 +197,10 @@ public actor SigningEngine: SigningEngineProtocol {
             try await disinject(request: request, appURL: appURL)
 
             emit(.signing, 0.55, "Signing frameworks and app extensions…")
-            try await signNestedBundles(in: appURL, config: config, certificate: certificate, profile: profile)
+            try await signNestedBundles(in: appURL, config: config, certificate: certificate, profile: profile, p12Password: p12Password)
 
             emit(.signing, 0.70, "Signing the main app…")
-            try await signMainApp(appURL: appURL, config: config, certificate: certificate, profile: profile)
+            try await signMainApp(appURL: appURL, config: config, certificate: certificate, profile: profile, p12Password: p12Password)
 
             if config.verifyAfterSigning {
                 emit(.verifying, 0.85, "Verifying the signed app…")
@@ -324,7 +333,7 @@ public actor SigningEngine: SigningEngineProtocol {
     /// zsign's asset initialisation refuses a non-adhoc sign without
     /// a provisioning profile (it needs the team id from it), so a nil
     /// provision here would make every nested sign fail.
-    private func signNestedBundles(in appURL: URL, config: SigningConfiguration, certificate: CertificateModel?, profile: ProvisioningModel?) async throws {
+    private func signNestedBundles(in appURL: URL, config: SigningConfiguration, certificate: CertificateModel?, profile: ProvisioningModel?, p12Password: String?) async throws {
         let adhoc = config.doAdhocSigning
         let p12Path = certificate?.fileURL?.path
         let provisionPath: String? = adhoc ? nil : profile?.fileURL?.path
@@ -369,7 +378,7 @@ public actor SigningEngine: SigningEngineProtocol {
         }
     }
 
-    private func signMainApp(appURL: URL, config: SigningConfiguration, certificate: CertificateModel?, profile: ProvisioningModel?) async throws {
+    private func signMainApp(appURL: URL, config: SigningConfiguration, certificate: CertificateModel?, profile: ProvisioningModel?, p12Password: String?) async throws {
         var provisionPath: String?
         if !config.removeProvisioning, let profile, let profileURL = profile.fileURL {
             let embedded = appURL.appendingPathComponent("embedded.mobileprovision")
@@ -638,6 +647,38 @@ public actor SigningEngine: SigningEngineProtocol {
             profile = found
         }
         return (certificate, profile)
+    }
+
+    /// Resolves the P12 password for the signing certificate: the
+    /// Keychain entry saved at import time (via the password resolver),
+    /// falling back to the fixed password given at initialisation
+    /// (tests). Returns nil when no password is stored — an
+    /// empty-password P12 still signs with nil.
+    private func resolvePassword(for certificateID: UUID?) async -> String? {
+        if let certificateID, let passwordResolver {
+            if let resolved = await passwordResolver(certificateID) {
+                return resolved
+            }
+        }
+        return p12Password
+    }
+
+    /// Fails fast with a typed error when the stored password does not
+    /// open the P12, instead of letting zsign fail later with a generic
+    /// "zsign failed (code 5)". The P12 passed import with this same
+    /// check, so a failure here means the stored password is wrong
+    /// (or the file changed) — never a false positive on a good P12.
+    private func verifyP12Password(p12URL: URL, password: String?) throws {
+        guard let data = try? Data(contentsOf: p12URL), !data.isEmpty else { return }
+        let options: [String: Any] = [kSecImportExportPassphrase as String: password ?? ""]
+        var items: CFArray?
+        let status = SecPKCS12Import(data as CFData, options as CFDictionary, &items)
+        guard status == errSecSuccess else {
+            if status == errSecAuthFailed {
+                throw SigningError.invalidPassword
+            }
+            throw SigningError.invalidCertificate(reason: "The certificate file could not be opened (Security error \(status)).")
+        }
     }
 
     // MARK: - Bookkeeping

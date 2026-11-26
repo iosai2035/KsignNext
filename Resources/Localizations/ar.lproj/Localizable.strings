@@ -275,12 +275,12 @@
 "install.otherdevice" = "ثبّت على جهاز آخر";
 "install.otherdevice.note" = "يحتاج واي فاي: الجهاز الآخر يفتح الرابط على نفس الشبكة.";
 "install.sidestore.wifi" = "SideStore نفسه يحتاج واي فاي للتثبيت.";
-"install.refresh" = "تجديد";
-"install.refreshing" = "جارٍ التجديد…";
-"install.refresh.installing" = "جارٍ تثبيت التطبيق المجدَّد…";
-"install.refresh.done" = "تم التجديد — جارٍ التثبيت الآن.";
+"install.refresh" = "إعادة توقيع";
+"install.refreshing" = "جارٍ إعادة التوقيع…";
+"install.refresh.installing" = "جارٍ تثبيت التطبيق المعاد توقيعه…";
+"install.refresh.done" = "تمت إعادة التوقيع — جارٍ التثبيت الآن.";
 "install.expiry.days" = "تنتهي صلاحية التوقيع خلال %d أيام";
-"install.expiry.expired" = "انتهت صلاحية التوقيع — جدّد الآن";
+"install.expiry.expired" = "انتهت صلاحية التوقيع — يلزم ملف جديد";
 "install.expiry.unknown" = "تاريخ انتهاء التوقيع غير معروف";
 "install.refresh.error.nocontainer" = "التجديد غير متاح في هذا السياق.";
 "udid.section" = "UDID الجهاز";

@@ -295,7 +295,7 @@ is the pinned tree):
   (see §6). `debug` must stay `false` (it enables
   `danger_accept_invalid_certs`).
 
-## 2. Dependency audit (iOS targets: aarch64-apple-ios / aarch64-apple-ios-sim / x86_64-apple-ios-sim)
+## 2. Dependency audit (iOS targets: aarch64-apple-ios / aarch64-apple-ios-sim / x86_64-apple-ios)
 
 Resolved versions are from the pinned commit's own `Cargo.lock`
 (`cargo build --locked` reproduces them). "Evidence" is what was
@@ -336,7 +336,7 @@ but only a real `cargo build --target …-apple-ios` proves it.
 | 30 | `reqwest-middleware` 0.5.1 → 0.5.2, `http` 1.4.0 → 1.5.0, `urlencoding` 2.1.3, `web-time` 1 → 1.1.0, `x509-cert` 0.2.5 | Yes | Pure Rust (`x509-cert` is `der`-based). |
 | 31 | `apple-codesign-quick` 0.1.0 (Dadoum, **LGPL-2.1**) | **Yes (verify)** | Deps: byteorder, `cms`, `der`, **memmap2**, pem-rfc7468, plist, **rayon**, rsa, sha1, sha2, spki, thiserror, x509-cert. `memmap2` = `mmap` (available on iOS); `rayon` = threads (fine on iOS). Only used for signing (Phase 2/3) but compiled regardless. **Licence note:** LGPL-2.1, statically linked — we do not modify it and do not need its signing code at all (zsign is our signer); if licence review ever objects, the dependency can only be removed by patching isideload, so flag it to the licence check. It is **not** needed in Phase 1. |
 | 32 | `rustls-platform-verifier` **0.7.1** (transitive, via reqwest's rustls stack) | **Yes (verify on device — Q5)** | Deps: core-foundation, rustls-native-certs, security-framework **3.7.0**. On Apple targets it verifies via the **Security framework** (`SecTrust`). Needs `-framework Security -framework CoreFoundation` at link time. Risk: isideload's own `Cargo.toml` comment says this crate has a bug that rejects Apple's root cert ("invalid certificate error with apple's root cert… fixed already but I am waiting for a new release"); isideload works around it on Windows with native-tls. On iOS there is no native-tls fallback — the first on-device TLS handshake to `gsa.apple.com` is the test. |
-| 33 | `ring` **0.17.14** (transitive, via rustls + rcgen + idevice) | **Yes** | **Native C + assembly — the one native-code dependency in the tree.** Verified iOS-safe from ring's own `build.rs` (docs.rs source): `AsmTarget { oss: APPLE_ABI, arch: AARCH64, perlasm_format: "ios64" }` and a `[target.'cfg(all(aarch64, target_vendor = "apple", any(target_os = "ios", …)))]` dependency on `libc`. Ring's C is built by the `cc` crate with the Xcode clang; the `x86_64-apple-ios-sim` slice uses the `macosx` perlasm format. Requires a C compiler + perl at build time (present on the macOS runner). No `-lc++` needed. |
+| 33 | `ring` **0.17.14** (transitive, via rustls + rcgen + idevice) | **Yes** | **Native C + assembly — the one native-code dependency in the tree.** Verified iOS-safe from ring's own `build.rs` (docs.rs source): `AsmTarget { oss: APPLE_ABI, arch: AARCH64, perlasm_format: "ios64" }` and a `[target.'cfg(all(aarch64, target_vendor = "apple", any(target_os = "ios", …)))]` dependency on `libc`. Ring's C is built by the `cc` crate with the Xcode clang; the `x86_64-apple-ios` slice uses the `macosx` perlasm format. Requires a C compiler + perl at build time (present on the macOS runner). No `-lc++` needed. |
 | 34 | `getrandom` 0.2.17 / 0.3.4 (transitive) | **Yes** | getrandom's supported-target table: **iOS `*-apple-ios` → `SecRandomCopyBytes`** (docs.rs). Needs `-framework Security` at link time. |
 | 35 | `encoding_rs` 0.8.42, `h2` 0.4.20, `hyper` 1.12.0, `hyper-rustls` 0.27.10, `hyper-util` 0.1.21, `tokio-rustls` 0.26, `rustls-webpki` 0.103.16, `webpki-roots`, `mio` 1.2.4, `socket2` 0.6.5, `libc` 0.2.191, `memchr`, `itoa`, `ryu`, `once_cell`, `log`, `pin-project-lite`, `bytes`, `slab` (all transitive) | Yes | Pure Rust, or (mio/socket2/libc) OS abstractions with iOS support. `encoding_rs` ships aarch64 SIMD paths that compile for iOS. |
 
@@ -1031,16 +1031,18 @@ Stable `code` values: `ok` (unused — success is `ok: true`),
   ```toml
   [toolchain]
   channel = "stable"
-  targets = ["aarch64-apple-ios", "aarch64-apple-ios-sim", "x86_64-apple-ios-sim"]
+  targets = ["aarch64-apple-ios", "aarch64-apple-ios-sim", "x86_64-apple-ios"]
   ```
   Builders: on the first green run, record `rustc --version`
   and pin the exact version (e.g. `channel = "1.9x.y"`) in
   that file. Floor: Rust ≥ 1.85 (isideload is edition 2024).
 - The three targets are all needed: `aarch64-apple-ios`
   (device / archive), `aarch64-apple-ios-sim` (Apple Silicon
-  simulator), `x86_64-apple-ios-sim` (the Intel runner's
+  simulator), `x86_64-apple-ios` (the Intel runner's
   simulator tests — the workflow tests on `iPhone 17`
-  simulator on `macos-15-intel`).
+  simulator on `macos-15-intel`). Note: `x86_64-apple-ios-sim`
+  does NOT exist as a Rust target — the Intel simulator triple
+  is `x86_64-apple-ios` itself (its env is sim).
 
 ### 8.2 Build commands (new workflow step, before "Regenerate Xcode project")
 
@@ -1049,19 +1051,25 @@ Stable `code` values: `ok` (unused — success is `ok: true`),
         run: |
           set -o pipefail
           rustup toolchain install stable
-          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios-sim
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
           rustc --version; cargo --version
           cd RustCore/apple_refresh
           cargo build --release --locked --target aarch64-apple-ios
           cargo build --release --locked --target aarch64-apple-ios-sim
-          cargo build --release --locked --target x86_64-apple-ios-sim
+          cargo build --release --locked --target x86_64-apple-ios
           cd ../..
+          # The two simulator slices must be merged with lipo first:
+          # -create-xcframework rejects two equivalent simulator
+          # definitions (CI run 45803079630, exit 70).
+          mkdir -p RustCore/apple_refresh/target/universal-ios-sim
+          lipo -create \
+            RustCore/apple_refresh/target/aarch64-apple-ios-sim/release/libapple_refresh.a \
+            RustCore/apple_refresh/target/x86_64-apple-ios/release/libapple_refresh.a \
+            -output RustCore/apple_refresh/target/universal-ios-sim/libapple_refresh.a
           xcodebuild -create-xcframework \
             -library RustCore/apple_refresh/target/aarch64-apple-ios/release/libapple_refresh.a \
             -headers RustCore/apple_refresh/include \
-            -library RustCore/apple_refresh/target/aarch64-apple-ios-sim/release/libapple_refresh.a \
-            -headers RustCore/apple_refresh/include \
-            -library RustCore/apple_refresh/target/x86_64-apple-ios-sim/release/libapple_refresh.a \
+            -library RustCore/apple_refresh/target/universal-ios-sim/libapple_refresh.a \
             -headers RustCore/apple_refresh/include \
             -output RustCore/AppleRefresh.xcframework
           ls -R RustCore/AppleRefresh.xcframework
@@ -1070,9 +1078,15 @@ Stable `code` values: `ok` (unused — success is `ok: true`),
 Notes:
 - `--locked` fails the build if `Cargo.lock` is out of date —
   intentional: the lock is the pin.
-- `xcodebuild -create-xcframework` accepts two `-library`
-  entries for the simulator platform; it merges them into one
-  simulator slice (arm64 + x86_64 fat binary).
+- `xcodebuild -create-xcframework` takes ONE `-library` per
+  platform variant. The two simulator slices (arm64 + x86_64)
+  are first merged into a single fat library with `lipo -create`
+  and passed as the one simulator library — passing both slices
+  separately fails with "Both 'ios-arm64-simulator' and
+  'ios-x86_64-simulator' represent two equivalent library
+  definitions" (exit 70). `Scripts/build_rust_core.sh` is the
+  single source of truth for these commands; the workflow step
+  calls the script.
 - The XCFramework lands at
   `RustCore/AppleRefresh.xcframework`. It is **built, not
   committed**: add `RustCore/AppleRefresh.xcframework/` and

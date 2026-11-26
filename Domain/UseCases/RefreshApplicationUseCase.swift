@@ -15,12 +15,14 @@ import Foundation
 // afterwards, so refreshing never leaves a stray copy in the
 // Applications list.
 //
-// Honest limit: a refresh only extends the signature while the stored
-// profile is still valid. A free Apple ID profile expires 7 days
-// after creation; once it is expired, refresh refuses with a typed
-// error and a fresh profile must be imported (from Xcode or from
-// Apple's servers) before signing again. A paid developer profile
-// lasts a year, so refresh works for a year with no Apple contact.
+// Honest limit: re-signing with the same profile extends nothing —
+// the app still dies on the profile's original expiry date, no matter
+// how many times it is re-signed. A refresh only repairs a broken
+// signature while the profile is still valid. Once it is expired,
+// refresh refuses with a typed error and a fresh profile must be
+// imported (from Xcode or from Apple's servers) before signing again.
+// A paid developer profile lasts a year, so refresh works for a year
+// with no Apple contact.
 
 // MARK: - Errors
 

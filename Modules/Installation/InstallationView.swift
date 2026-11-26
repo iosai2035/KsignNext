@@ -22,6 +22,7 @@ final class InstallationViewModel: ObservableObject {
     @Published var signedApps: [String] = []
     @Published var selectedApp = ""
     @Published var signatureExpiryText: String?
+    @Published var signatureExpired = false
     @Published var isRefreshing = false
     @Published var refreshStatus = ""
 
@@ -86,22 +87,27 @@ final class InstallationViewModel: ObservableObject {
               let docs = Workspace.documents,
               let refreshUseCase else {
             signatureExpiryText = nil
+            signatureExpired = false
             return
         }
         let ipaURL = docs.appendingPathComponent("SignedApps/\(selectedApp)")
         do {
             guard let expiry = try await refreshUseCase.profileExpiration(signedIPAURL: ipaURL) else {
                 signatureExpiryText = NSLocalizedString("install.expiry.unknown", comment: "")
+                signatureExpired = false
                 return
             }
             if expiry < Date() {
                 signatureExpiryText = NSLocalizedString("install.expiry.expired", comment: "")
+                signatureExpired = true
             } else {
                 let days = Calendar.current.dateComponents([.day], from: Date(), to: expiry).day ?? 0
                 signatureExpiryText = String(format: NSLocalizedString("install.expiry.days", comment: ""), days)
+                signatureExpired = false
             }
         } catch {
             signatureExpiryText = nil
+            signatureExpired = false
         }
     }
 
@@ -302,7 +308,7 @@ struct InstallationView: View {
                     if viewModel.canRefresh {
                         Button(NSLocalizedString("install.refresh", comment: "")) { Task { await viewModel.refreshSelectedApp() } }
                             .buttonStyle(.bordered)
-                            .disabled(viewModel.isRefreshing || viewModel.selectedApp.isEmpty)
+                            .disabled(viewModel.isRefreshing || viewModel.selectedApp.isEmpty || viewModel.signatureExpired)
                             .accessibilityIdentifier("install.refresh")
                         if viewModel.isRefreshing {
                             ProgressView(viewModel.refreshStatus)

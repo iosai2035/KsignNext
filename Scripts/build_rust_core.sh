@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 rustup toolchain install stable
-rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios-sim
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
 rustc --version; cargo --version
 
 # First-run bootstrap: the design pins versions with a committed Cargo.lock
@@ -27,14 +27,20 @@ fi
 cd RustCore/apple_refresh
 cargo build --release --locked --target aarch64-apple-ios
 cargo build --release --locked --target aarch64-apple-ios-sim
-cargo build --release --locked --target x86_64-apple-ios-sim
+cargo build --release --locked --target x86_64-apple-ios
 cd ../..
+# XCFramework rule (proven by CI run 45803079630, exit 70): the two
+# simulator slices must be merged into ONE fat library with lipo first;
+# -create-xcframework rejects two equivalent simulator definitions.
+mkdir -p RustCore/apple_refresh/target/universal-ios-sim
+lipo -create \
+  RustCore/apple_refresh/target/aarch64-apple-ios-sim/release/libapple_refresh.a \
+  RustCore/apple_refresh/target/x86_64-apple-ios/release/libapple_refresh.a \
+  -output RustCore/apple_refresh/target/universal-ios-sim/libapple_refresh.a
 xcodebuild -create-xcframework \
   -library RustCore/apple_refresh/target/aarch64-apple-ios/release/libapple_refresh.a \
   -headers RustCore/apple_refresh/include \
-  -library RustCore/apple_refresh/target/aarch64-apple-ios-sim/release/libapple_refresh.a \
-  -headers RustCore/apple_refresh/include \
-  -library RustCore/apple_refresh/target/x86_64-apple-ios-sim/release/libapple_refresh.a \
+  -library RustCore/apple_refresh/target/universal-ios-sim/libapple_refresh.a \
   -headers RustCore/apple_refresh/include \
   -output RustCore/AppleRefresh.xcframework
 ls -R RustCore/AppleRefresh.xcframework

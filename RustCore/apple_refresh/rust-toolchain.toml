@@ -4,4 +4,4 @@
 # exact version here (e.g. channel = "1.9x.y").
 [toolchain]
 channel = "stable"
-targets = ["aarch64-apple-ios", "aarch64-apple-ios-sim", "x86_64-apple-ios-sim"]
+targets = ["aarch64-apple-ios", "aarch64-apple-ios-sim", "x86_64-apple-ios"]

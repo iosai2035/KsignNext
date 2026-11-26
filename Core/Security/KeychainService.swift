@@ -5,7 +5,10 @@ import Security
 /// references. No plaintext storage anywhere; items use
 /// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` so they never
 /// leave this device in a backup and are unavailable before first unlock.
-public final class KeychainService {
+/// Stateless (only an immutable service name) and the Security framework
+/// calls are thread-safe, so the class is `@unchecked Sendable` and can
+/// be captured in `@Sendable` resolvers.
+public final class KeychainService: @unchecked Sendable {
     public static let shared = KeychainService()
 
     private let service: String

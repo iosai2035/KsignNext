@@ -275,12 +275,12 @@
 "install.otherdevice" = "Install on another device";
 "install.otherdevice.note" = "Needs Wi-Fi: the other device opens the link on the same network.";
 "install.sidestore.wifi" = "SideStore itself needs Wi-Fi to install.";
-"install.refresh" = "Refresh";
-"install.refreshing" = "Refreshing…";
-"install.refresh.installing" = "Installing refreshed app…";
-"install.refresh.done" = "Refreshed — installing now.";
+"install.refresh" = "Re-sign";
+"install.refreshing" = "Re-signing…";
+"install.refresh.installing" = "Installing re-signed app…";
+"install.refresh.done" = "Re-signed — installing now.";
 "install.expiry.days" = "Signature expires in %d days";
-"install.expiry.expired" = "Signature expired — refresh now";
+"install.expiry.expired" = "Signature expired — a fresh profile is needed";
 "install.expiry.unknown" = "Signature expiry unknown";
 "install.refresh.error.nocontainer" = "Refresh is not available in this context.";
 "udid.section" = "Device UDID";
