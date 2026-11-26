@@ -69,9 +69,6 @@ public final class DependencyContainer {
             let certificatesDir = try? files.folder(.certificates)
             self.signingEngine = SigningEngine(
                 certificateResolver: { id in try? await certificateRepository.fetch(id: id) },
-                passwordResolver: { [keychain] id in
-                    try? keychain.readPassword(account: CertificateEngine.passwordAccount(for: id))
-                },
                 provisioningResolver: { id in
                     guard let certificatesDir else { return nil }
                     let urls = (try? FileManager.default.contentsOfDirectory(
@@ -83,6 +80,9 @@ public final class DependencyContainer {
                         }
                     }
                     return nil
+                },
+                passwordResolver: { [keychain] id in
+                    try? keychain.readPassword(account: CertificateEngine.passwordAccount(for: id))
                 }
             )
         }
