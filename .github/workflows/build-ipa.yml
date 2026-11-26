@@ -72,29 +72,38 @@ jobs:
       # The test step hung three times right after the test bundles
       # finished building, before any test started: xcodebuild stalls
       # launching the iOS 26 simulator on the Intel runner. Boot a
-      # known-good iOS 18.6 simulator explicitly first. macOS has no
-      # `timeout` command, so the wait is bounded in Python instead.
+      # known-good iOS 18.6 simulator explicitly first and pass its
+      # UDID to the test step, so both steps use the same device.
+      # (simctl JSON runtime keys use dashes, e.g. iOS-18-6, so the
+      # version is normalized before matching. macOS has no `timeout`
+      # command, so the boot wait is bounded in Python instead.)
       - name: Boot iPhone simulator
         run: |
           python3 - <<'EOF'
-          import json, subprocess
+          import json, os, subprocess
           out = subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "--json"])
           data = json.loads(out)
-          udid = None
+          candidates = []
           for runtime, devices in data["devices"].items():
-              if "18.6" not in runtime:
+              if "iOS" not in runtime:
                   continue
+              ver = runtime.rsplit("iOS-", 1)[-1].replace("-", ".")
               for d in devices:
                   if d["name"] == "iPhone 16" and d["isAvailable"]:
-                      udid = d["udid"]
-          if not udid:
-              raise SystemExit("No available iPhone 16 (iOS 18.6) simulator found")
-          print("Booting iPhone 16 (iOS 18.6):", udid)
+                      candidates.append((ver, d["udid"]))
+          if not candidates:
+              raise SystemExit("No available iPhone 16 simulator found")
+          # Prefer iOS 18.6 (known-good on Intel); otherwise the oldest iOS.
+          candidates.sort(key=lambda c: (c[0] != "18.6", c[0]))
+          ver, udid = candidates[0]
+          print(f"Booting iPhone 16 (iOS {ver}): {udid}")
           subprocess.run(["xcrun", "simctl", "boot", udid], check=False)
           try:
               subprocess.run(["xcrun", "simctl", "bootstatus", udid, "-b"], timeout=900, check=False)
           except subprocess.TimeoutExpired:
               print("bootstatus timed out after 900s; continuing anyway")
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"SIM_UDID={udid}\n")
           print(subprocess.check_output(["xcrun", "simctl", "list", "devices", "booted"]).decode())
           EOF
 
@@ -106,7 +115,7 @@ jobs:
           xcodebuild test \
             -project KsignNext.xcodeproj \
             -scheme KsignNext \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.6' \
+            -destination 'platform=iOS Simulator,id=${{ env.SIM_UDID }}' \
             -only-testing:KsignNextTests \
             ONLY_ACTIVE_ARCH=YES 2>&1 | tee build/test.log
 
