@@ -1,17 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
-
-/// A real `.plist` file for sharing: the filename and the
-/// `com.apple.property-list` type travel with the share, unlike raw data.
-private struct PlistExportFile: Transferable {
-    let url: URL
-
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(contentType: .propertyList) { file in
-            SentTransferredFile(file.url)
-        }
-    }
-}
 
 /// Edits one plist number without coercing bad input to 0: the typed text
 /// is kept until it parses as the original numeric type, and an invalid
@@ -149,7 +136,12 @@ struct PlistEditorView: View {
         .toolbar {
             if let url = exportFileURL {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    ShareLink(item: PlistExportFile(url: url), preview: SharePreview(fileURL.lastPathComponent)) {
+                    // Share the real .plist file URL: the filename and
+                    // the property-list type travel with the share,
+                    // unlike raw data. (A custom Transferable wrapper
+                    // was tried first; its FileRepresentation overload
+                    // does not compile on this SDK.)
+                    ShareLink(item: url, preview: SharePreview(fileURL.lastPathComponent)) {
                         Label(NSLocalizedString("common.export", comment: ""), systemImage: "square.and.arrow.up")
                     }
                 }

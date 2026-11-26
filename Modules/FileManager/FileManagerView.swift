@@ -18,7 +18,7 @@ enum FileSort: String, CaseIterable { case name, size, date }
 
 /// Where a tapped file opens: plists get the plist editor, everything
 /// else opens in the hex editor.
-enum FileDestination: Identifiable {
+enum FileDestination: Identifiable, Hashable {
     case hex(URL)
     case plist(URL)
 
