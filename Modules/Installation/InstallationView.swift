@@ -352,7 +352,7 @@ struct InstallationView: View {
                                 Text(viewModel.appleIDEmail
                                      ?? NSLocalizedString("appleid.notsignedin", comment: ""))
                                     .font(.caption)
-                                    .foregroundStyle(viewModel.appleIDEmail == nil ? .secondary : .green)
+                                    .foregroundColor(viewModel.appleIDEmail == nil ? .secondary : .green)
                             }
                         }
                         .accessibilityIdentifier("install.appleid")
