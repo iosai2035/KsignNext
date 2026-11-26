@@ -89,6 +89,11 @@ struct SettingsView: View {
                     Toggle(NSLocalizedString("settings.signing.verify", comment: ""), isOn: $verifyAfterSign)
                     Toggle(NSLocalizedString("settings.signing.keep", comment: ""), isOn: $keepOriginal)
                 }
+                Section(NSLocalizedString("settings.section.appleid", comment: "")) {
+                    NavigationLink(NSLocalizedString("appleid.title", comment: "")) {
+                        AppleIDSignInView(useCase: coordinator.container.makeAppleIDSignInUseCase())
+                    }
+                }
                 Section(NSLocalizedString("settings.section.install", comment: "")) {
                     Toggle(NSLocalizedString("settings.install.autostart", comment: ""), isOn: $autoStartServer)
                     NavigationLink(NSLocalizedString("tab.installation", comment: "")) { InstallationView(container: coordinator.container) }

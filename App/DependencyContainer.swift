@@ -138,6 +138,13 @@ public final class DependencyContainer {
         VerifySignatureUseCase(signingEngine: requireSigningEngine(), logs: logs)
     }
 
+    public lazy var appleIDSessionStore: AppleIDSessionStore =
+        AppleIDSessionStore(keychain: keychain)
+
+    public func makeAppleIDSignInUseCase() -> AppleIDSignInUseCase {
+        AppleIDSignInUseCase(store: appleIDSessionStore)
+    }
+
     @MainActor
     public func makeAppState() -> AppState {
         AppState(configuration: configuration)

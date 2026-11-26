@@ -23,6 +23,7 @@ final class InstallationViewModel: ObservableObject {
     @Published var selectedApp = ""
     @Published var signatureExpiryText: String?
     @Published var signatureExpired = false
+    @Published var appleIDEmail: String?
     @Published var isRefreshing = false
     @Published var refreshStatus = ""
 
@@ -31,7 +32,9 @@ final class InstallationViewModel: ObservableObject {
     /// reads `udidStore.savedUDID` when registering this device.
     let udidStore = DeviceUDIDStore()
 
-    private let container: DependencyContainer?
+    /// The container, exposed so the view can build the Apple ID
+    /// sign-in screen from it. Nil in tests / previews.
+    let container: DependencyContainer?
     private let installationEngine: InstallationEngine
     private let ipaEngine: IPAEngineProtocol
 
@@ -75,6 +78,7 @@ final class InstallationViewModel: ObservableObject {
         let items = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         signedApps = items.filter { $0.pathExtension.lowercased() == "ipa" }.map(\.lastPathComponent).sorted()
         if selectedApp.isEmpty { selectedApp = signedApps.first ?? "" }
+        appleIDEmail = container?.appleIDSessionStore.loadSession()?.email
         Task { await loadSignatureExpiry() }
     }
 
@@ -314,6 +318,21 @@ struct InstallationView: View {
                             ProgressView(viewModel.refreshStatus)
                                 .accessibilityIdentifier("install.refreshProgress")
                         }
+                    }
+                    if let container = viewModel.container {
+                        NavigationLink {
+                            AppleIDSignInView(useCase: container.makeAppleIDSignInUseCase())
+                        } label: {
+                            HStack {
+                                Text(NSLocalizedString("appleid.title", comment: ""))
+                                Spacer()
+                                Text(viewModel.appleIDEmail
+                                     ?? NSLocalizedString("appleid.notsignedin", comment: ""))
+                                    .font(.caption)
+                                    .foregroundStyle(viewModel.appleIDEmail == nil ? .secondary : .green)
+                            }
+                        }
+                        .accessibilityIdentifier("install.appleid")
                     }
                 }
             }
