@@ -111,7 +111,7 @@ final class RealRefreshUseCaseTests: XCTestCase {
             signUseCase: signUseCase)
     }
 
-    private func execute(udid: String = Self.udid) async throws -> RealRefreshResult {
+    private func execute(udid: String = RealRefreshUseCaseTests.udid) async throws -> RealRefreshResult {
         try await realRefresh.execute(
             signedIPAURL: Self.ipaURL,
             bundleID: "com.example.app",
