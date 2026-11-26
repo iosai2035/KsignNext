@@ -34,7 +34,6 @@ final class InstallationViewModel: ObservableObject, TwoFactorAnswering {
     @Published var twoFactorPrompt: TwoFactorPrompt?
     @Published var showing2FA = false
     @Published var twoFactorCode = ""
-    @Published var codeRequested = false
     @Published var selectedNumberID: Int?
     private let twoFactorGate = TwoFactorPromptGate()
 
@@ -81,6 +80,9 @@ final class InstallationViewModel: ObservableObject, TwoFactorAnswering {
         self.container = container
         self.installationEngine = installationEngine ?? container?.installationEngine ?? InstallationEngine(server: NIOInstallationServer())
         self.ipaEngine = ipaEngine ?? container?.ipaEngine ?? IPAEngine()
+        // Populate before the first render so the empty state does
+        // not flash on screens that already have signed apps.
+        refreshSignedApps()
     }
 
     func refreshSignedApps() {
@@ -194,7 +196,6 @@ final class InstallationViewModel: ObservableObject, TwoFactorAnswering {
         let signInUseCase = container.makeAppleIDSignInUseCase()
         // 2FA for the silent sign-in inside the refresh, if Apple
         // asks for one: same gate pattern as the Settings sign-in.
-        codeRequested = false
         await twoFactorGate.setPromptHandler { [weak self] prompt in
             self?.twoFactorPrompt = prompt
             self?.twoFactorCode = ""
@@ -237,12 +238,10 @@ final class InstallationViewModel: ObservableObject, TwoFactorAnswering {
 
     func requestCodeBySMS() {
         guard let id = selectedNumberID else { return }
-        codeRequested = true
         Task { await twoFactorGate.answer(.sms(id: id)) }
     }
 
     func requestCodeOnDevices() {
-        codeRequested = true
         Task { await twoFactorGate.answer(.devices) }
     }
 
@@ -383,16 +382,64 @@ final class InstallationViewModel: ObservableObject, TwoFactorAnswering {
 
 struct InstallationView: View {
     @StateObject private var viewModel: InstallationViewModel
+    /// Observed separately so the UDID hint next to Refresh reacts
+    /// the moment a UDID is saved or removed (the view model alone
+    /// would not republish the store's changes).
+    @ObservedObject private var udidStore: DeviceUDIDStore
 
     /// - Parameter container: the app's container (from the
     ///   coordinator); nil builds fresh engines (tests / previews).
     init(container: DependencyContainer? = nil) {
-        _viewModel = StateObject(wrappedValue: InstallationViewModel(container: container))
+        let viewModel = InstallationViewModel(container: container)
+        _viewModel = StateObject(wrappedValue: viewModel)
+        _udidStore = ObservedObject(wrappedValue: viewModel.udidStore)
     }
 
     var body: some View {
+        // Tab root: owns its own stack, with a large title.
+        NavigationStack {
+            Group {
+                if viewModel.signedApps.isEmpty {
+                    EmptyStateView(
+                        NSLocalizedString("install.empty", comment: ""),
+                        systemImage: "tray",
+                        description: Text(NSLocalizedString("install.empty.detail", comment: ""))
+                    ) {
+                        Button(NSLocalizedString("common.refresh", comment: "")) {
+                            viewModel.refreshSignedApps()
+                        }
+                        .dsSecondaryButton()
+                        .accessibilityIdentifier("install.refreshList")
+                    }
+                } else {
+                    installationList
+                }
+            }
+            .navigationTitle(NSLocalizedString("tab.installation", comment: ""))
+            .dsLargeTitle()
+            .sheet(isPresented: $viewModel.showing2FA) {
+                if let prompt = viewModel.twoFactorPrompt {
+                    TwoFactorSheet(prompt: prompt, viewModel: viewModel)
+                }
+            }
+            .onAppear {
+                viewModel.refreshSignedApps()
+                Task { await viewModel.autoStartServerIfEnabled() }
+            }
+            .onChange(of: viewModel.selectedApp) { _ in Task { await viewModel.loadSignatureExpiry() } }
+            // No stop-on-disappear, and no stop on background: the
+            // server is stopped only by the Stop button. Stopping
+            // when the view goes away would kill an install link the
+            // user still needs, and stopping on background would kill
+            // an install download in flight — the app backgrounds
+            // when the install link opens, and a background task
+            // holds the server while iOS fetches the IPA.
+        }
+    }
+
+    private var installationList: some View {
         List {
-            Section(NSLocalizedString("install.section.server", comment: "")) {
+            Section {
                 Picker(NSLocalizedString("install.pick.app", comment: ""), selection: $viewModel.selectedApp) {
                     ForEach(viewModel.signedApps, id: \.self) { Text($0).tag($0) }
                 }
@@ -409,16 +456,20 @@ struct InstallationView: View {
                         .textSelection(.enabled)
                         .accessibilityIdentifier("install.linkText")
                     Button(NSLocalizedString("install.stop", comment: ""), role: .destructive) { Task { await viewModel.stopServer() } }
+                        .dsPrimaryButton()
+                        .tint(.red)
                         .accessibilityIdentifier("install.stop")
                 } else {
                     Button(NSLocalizedString("install.thisdevice", comment: "")) { Task { await viewModel.installOnThisDevice() } }
-                        .buttonStyle(.borderedProminent)
+                        .dsPrimaryButton()
+                        .disabled(viewModel.selectedApp.isEmpty)
                         .accessibilityIdentifier("install.thisDevice")
                     Text(NSLocalizedString("install.thisdevice.note", comment: ""))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button(NSLocalizedString("install.otherdevice", comment: "")) { Task { await viewModel.startServer(destination: .anotherDevice) } }
-                        .buttonStyle(.bordered)
+                        .dsSecondaryButton()
+                        .disabled(viewModel.selectedApp.isEmpty)
                         .accessibilityIdentifier("install.otherDevice")
                     Text(NSLocalizedString("install.otherdevice.note", comment: ""))
                         .font(.caption)
@@ -429,44 +480,38 @@ struct InstallationView: View {
                             .foregroundStyle(.secondary)
                             .accessibilityIdentifier("install.expiryText")
                     }
-                    if viewModel.canRefresh {
-                        Button(NSLocalizedString("install.refresh", comment: "")) { Task { await viewModel.refreshSelectedApp() } }
-                            .buttonStyle(.bordered)
-                            // An expired profile blocks only the legacy
-                            // same-profile refresh; the real refresh
-                            // (signed in) fetches a fresh profile, so
-                            // it stays enabled when signed in.
-                            .disabled(viewModel.isRefreshing || viewModel.selectedApp.isEmpty || (viewModel.signatureExpired && viewModel.appleIDEmail == nil))
-                            .accessibilityIdentifier("install.refresh")
-                        if viewModel.isRefreshing {
-                            ProgressView(viewModel.refreshStatus)
-                                .accessibilityIdentifier("install.refreshProgress")
-                        }
-                    }
-                    if let container = viewModel.container {
-                        NavigationLink {
-                            AppleIDSignInView(useCase: container.makeAppleIDSignInUseCase())
-                        } label: {
-                            HStack {
-                                Text(NSLocalizedString("appleid.title", comment: ""))
-                                Spacer()
-                                Text(viewModel.appleIDEmail
-                                     ?? NSLocalizedString("appleid.notsignedin", comment: ""))
-                                    .font(.caption)
-                                    .foregroundColor(viewModel.appleIDEmail == nil ? .secondary : .green)
-                            }
-                        }
-                        .accessibilityIdentifier("install.appleid")
-                    }
                 }
+                // Refresh stays visible while the server is running:
+                // re-signing is independent of serving, and hiding it
+                // left no way to re-sign without stopping the server.
+                if viewModel.canRefresh {
+                    refreshRow
+                }
+                if let container = viewModel.container {
+                    NavigationLink {
+                        AppleIDSignInView(useCase: container.makeAppleIDSignInUseCase())
+                    } label: {
+                        HStack {
+                            Text(NSLocalizedString("appleid.title", comment: ""))
+                            Spacer()
+                            Text(viewModel.appleIDEmail
+                                 ?? NSLocalizedString("appleid.notsignedin", comment: ""))
+                                .font(.caption)
+                                .foregroundColor(viewModel.appleIDEmail == nil ? .secondary : .green)
+                        }
+                    }
+                    .accessibilityIdentifier("install.appleid")
+                }
+            } header: {
+                Text(NSLocalizedString("install.section.server", comment: "")).dsSectionHeader()
             }
             DeviceUDIDSection(store: viewModel.udidStore)
-            Section(NSLocalizedString("install.section.export", comment: "")) {
+            Section {
                 if viewModel.selectedApp.isEmpty {
                     Text(NSLocalizedString("install.error.noapp", comment: "")).foregroundStyle(.secondary)
                 } else {
                     Button(NSLocalizedString("install.export", comment: "")) { viewModel.exportSelectedApp() }
-                        .buttonStyle(.bordered)
+                        .dsSecondaryButton()
                         .accessibilityIdentifier("install.export")
                     if let url = viewModel.exportedURL {
                         ShareLink(item: url, preview: SharePreview(viewModel.selectedApp)) {
@@ -479,7 +524,7 @@ struct InstallationView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 ForEach(viewModel.installerGuide.steps) { step in
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
                         Text("\(step.order). \(step.title)").font(.caption).bold()
                         Text(step.detail).font(.caption).foregroundStyle(.secondary)
                     }
@@ -492,22 +537,47 @@ struct InstallationView: View {
                 Text(NSLocalizedString("install.export.wifi", comment: ""))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } header: {
+                Text(NSLocalizedString("install.section.export", comment: "")).dsSectionHeader()
             }
             if let error = viewModel.errorMessage {
                 Section { Text(error).foregroundStyle(.red) }
             }
         }
-        .navigationTitle(NSLocalizedString("tab.installation", comment: ""))
-        .sheet(isPresented: $viewModel.showing2FA) {
-            if let prompt = viewModel.twoFactorPrompt {
-                TwoFactorSheet(prompt: prompt, viewModel: viewModel)
+    }
+
+    /// Re-sign button + progress + outcome, always visible (running
+    /// or stopped). The outcome text stays after the spinner stops:
+    /// previously `refreshStatus` was only shown inside the
+    /// `ProgressView`, so the "done" message was never readable.
+    private var refreshRow: some View {
+        Group {
+            Button(NSLocalizedString("install.refresh", comment: "")) { Task { await viewModel.refreshSelectedApp() } }
+                .dsSecondaryButton()
+                // An expired profile blocks only the legacy
+                // same-profile refresh; the real refresh
+                // (signed in) fetches a fresh profile, so
+                // it stays enabled when signed in.
+                .disabled(viewModel.isRefreshing || viewModel.selectedApp.isEmpty || (viewModel.signatureExpired && viewModel.appleIDEmail == nil))
+                .accessibilityIdentifier("install.refresh")
+            if viewModel.isRefreshing {
+                ProgressView(viewModel.refreshStatus)
+                    .accessibilityIdentifier("install.refreshProgress")
+            } else if !viewModel.refreshStatus.isEmpty {
+                Text(viewModel.refreshStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("install.refreshStatus")
+            }
+            // The real refresh needs the UDID: say so next to
+            // Refresh while signed in with none saved, instead of
+            // failing later with a missing-UDID error.
+            if viewModel.appleIDEmail != nil && udidStore.savedUDID == nil {
+                Text(NSLocalizedString("install.refresh.udid.hint", comment: ""))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("install.refresh.udidHint")
             }
         }
-        .onAppear {
-            viewModel.refreshSignedApps()
-            Task { await viewModel.autoStartServerIfEnabled() }
-        }
-        .onChange(of: viewModel.selectedApp) { _ in Task { await viewModel.loadSignatureExpiry() } }
-        .onDisappear { Task { if viewModel.isRunning { await viewModel.stopServer() } } }
     }
 }

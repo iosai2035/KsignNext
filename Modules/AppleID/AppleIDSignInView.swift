@@ -47,7 +47,6 @@ enum AppleIDClaimChoice: String, CaseIterable {
 /// `TwoFactorPromptGate`, so the sheet stays shared.
 protocol TwoFactorAnswering: AnyObject, ObservableObject {
     var twoFactorCode: String { get set }
-    var codeRequested: Bool { get set }
     var selectedNumberID: Int? { get set }
     func submitCode()
     func requestCodeBySMS()
@@ -70,7 +69,6 @@ final class AppleIDSignInViewModel: ObservableObject, TwoFactorAnswering {
     @Published var twoFactorPrompt: TwoFactorPrompt?
     @Published var showing2FA = false
     @Published var twoFactorCode = ""
-    @Published var codeRequested = false
     @Published var selectedNumberID: Int?
 
     private let useCase: AppleIDSignInUseCase
@@ -105,7 +103,15 @@ final class AppleIDSignInViewModel: ObservableObject, TwoFactorAnswering {
             servers.selectedServer = AnisetteServerProvider.defaultServer
         }
         isSigningIn = true
-        codeRequested = false
+        // `defer` (not a trailing reset): if the sign-in Task is
+        // cancelled while awaiting Apple, the lines after the await
+        // never run — the trailing reset left the spinner stuck on
+        // forever. `defer` clears the loading state on every exit.
+        defer {
+            isSigningIn = false
+            showing2FA = false
+            twoFactorPrompt = nil
+        }
         await gate.setPromptHandler { [weak self] prompt in
             self?.twoFactorPrompt = prompt
             self?.twoFactorCode = ""
@@ -131,9 +137,6 @@ final class AppleIDSignInViewModel: ObservableObject, TwoFactorAnswering {
             errorMessage = (error as? LocalizedError)?.errorDescription
                 ?? error.localizedDescription
         }
-        isSigningIn = false
-        showing2FA = false
-        twoFactorPrompt = nil
     }
 
     func cancelSignIn() {
@@ -159,12 +162,10 @@ final class AppleIDSignInViewModel: ObservableObject, TwoFactorAnswering {
 
     func requestCodeBySMS() {
         guard let id = selectedNumberID else { return }
-        codeRequested = true
         Task { await gate.answer(.sms(id: id)) }
     }
 
     func requestCodeOnDevices() {
-        codeRequested = true
         Task { await gate.answer(.devices) }
     }
 
@@ -200,9 +201,17 @@ struct AppleIDSignInView: View {
                               systemImage: "checkmark.circle")
                             .foregroundStyle(.green)
                     }
+                    // `statusMessage` is set on a successful sign-in,
+                    // but this branch never showed it — the success
+                    // message was written and then invisible.
+                    if let status = viewModel.statusMessage {
+                        Text(status).foregroundStyle(.green)
+                    }
                     Button(NSLocalizedString("appleid.signout", comment: ""), role: .destructive) {
                         viewModel.signOut()
                     }
+                    .dsPrimaryButton()
+                    .tint(.red)
                     .accessibilityIdentifier("appleid.signout")
                 }
                 Section {
@@ -216,7 +225,7 @@ struct AppleIDSignInView: View {
                         .font(.footnote)
                         .foregroundStyle(.orange)
                 } header: {
-                    Text(NSLocalizedString("appleid.section.signin", comment: ""))
+                    Text(NSLocalizedString("appleid.section.signin", comment: "")).dsSectionHeader()
                 }
 
                 Section {
@@ -243,7 +252,7 @@ struct AppleIDSignInView: View {
                     Toggle(NSLocalizedString("appleid.server.custom", comment: ""),
                            isOn: $viewModel.useCustomServer)
                     if viewModel.useCustomServer {
-                        TextField("https://", text: $viewModel.customServerURL)
+                        TextField(NSLocalizedString("appleid.server.url.placeholder", comment: ""), text: $viewModel.customServerURL)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
@@ -269,15 +278,20 @@ struct AppleIDSignInView: View {
                             Text(NSLocalizedString("appleid.signin", comment: ""))
                         }
                     }
+                    .dsPrimaryButton()
+                    // Paused means Apple will reject the sign-in: the
+                    // pause notice above is the reason it is disabled.
                     .disabled(viewModel.isSigningIn
                               || viewModel.email.isEmpty
-                              || viewModel.password.isEmpty)
+                              || viewModel.password.isEmpty
+                              || viewModel.pauseUntil != nil)
                     .accessibilityIdentifier("appleid.signin")
 
                     if viewModel.isSigningIn {
                         Button(NSLocalizedString("general.cancel", comment: ""), role: .cancel) {
                             viewModel.cancelSignIn()
                         }
+                        .dsPlainButton()
                     }
                 }
 
@@ -296,6 +310,10 @@ struct AppleIDSignInView: View {
             }
         }
         .navigationTitle(NSLocalizedString("appleid.title", comment: ""))
+        // Pushed from Settings and from Installation: NOT a tab root,
+        // so no own NavigationStack — the presenting screen provides
+        // it. Inline title for a pushed detail screen.
+        .dsInlineTitle()
         .sheet(isPresented: $viewModel.showing2FA) {
             if let prompt = viewModel.twoFactorPrompt {
                 TwoFactorSheet(prompt: prompt, viewModel: viewModel)
@@ -304,9 +322,16 @@ struct AppleIDSignInView: View {
     }
 }
 
-struct TwoFactorSheet: View {
+/// Generic over the answering view model: an `any TwoFactorAnswering`
+/// existential cannot back `@ObservedObject` (SwiftUI requires a
+/// concrete `ObservableObject` type), so each caller passes its own
+/// view-model type and the compiler infers `VM`.
+struct TwoFactorSheet<VM: TwoFactorAnswering>: View {
     let prompt: TwoFactorPrompt
-    @ObservedObject var viewModel: any TwoFactorAnswering
+    @ObservedObject var viewModel: VM
+    /// Short cooldown after tapping Resend: prevents double-taps
+    /// and repeated resend spam while Apple is already sending one.
+    @State private var resendCoolingDown = false
 
     var body: some View {
         NavigationStack {
@@ -317,7 +342,10 @@ struct TwoFactorSheet: View {
                         Text(lastError).foregroundStyle(.red)
                     }
                 }
-                if !viewModel.codeRequested, !prompt.numbers.isEmpty {
+                // The delivery choice stays visible after the first
+                // request: hiding it once a code was requested left
+                // no way to switch method (SMS vs trusted device).
+                if !prompt.numbers.isEmpty {
                     Section(NSLocalizedString("appleid.2fa.choose", comment: "")) {
                         Picker(NSLocalizedString("appleid.2fa.number", comment: ""),
                                selection: Binding(get: { viewModel.selectedNumberID },
@@ -330,10 +358,12 @@ struct TwoFactorSheet: View {
                         Button(NSLocalizedString("appleid.2fa.sms", comment: "")) {
                             viewModel.requestCodeBySMS()
                         }
+                        .dsSecondaryButton()
                         .accessibilityIdentifier("appleid.2fa.sms")
                         Button(NSLocalizedString("appleid.2fa.devices", comment: "")) {
                             viewModel.requestCodeOnDevices()
                         }
+                        .dsSecondaryButton()
                         .accessibilityIdentifier("appleid.2fa.devices")
                     }
                 }
@@ -352,16 +382,26 @@ struct TwoFactorSheet: View {
                     Button(NSLocalizedString("appleid.2fa.submit", comment: "")) {
                         viewModel.submitCode()
                     }
+                    .dsPrimaryButton()
                     .disabled(viewModel.twoFactorCode.trimmingCharacters(in: .whitespaces).count != 6)
                     .accessibilityIdentifier("appleid.2fa.submit")
                     Button(NSLocalizedString("appleid.2fa.resend", comment: "")) {
                         viewModel.resendCode()
+                        resendCoolingDown = true
+                        Task {
+                            try? await Task.sleep(nanoseconds: 30_000_000_000)
+                            resendCoolingDown = false
+                        }
                     }
+                    .dsPlainButton()
+                    .disabled(resendCoolingDown)
+                    .accessibilityIdentifier("appleid.2fa.resend")
                 }
                 Section {
                     Button(NSLocalizedString("general.cancel", comment: ""), role: .cancel) {
                         viewModel.cancel2FA()
                     }
+                    .dsPlainButton()
                 }
             }
             .navigationTitle(NSLocalizedString("appleid.2fa.title", comment: ""))

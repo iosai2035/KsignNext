@@ -45,6 +45,8 @@ final class KsignNextUITests: XCTestCase {
         XCTAssertTrue(app.buttons["dashboard.shortcut.apps"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["dashboard.shortcut.sign"].exists)
         XCTAssertTrue(app.buttons["dashboard.shortcut.certs"].exists)
-        XCTAssertTrue(app.buttons["dashboard.shortcut.downloads"].exists)
+        // Downloads/Files shortcuts were removed with the tab-bar
+        // reduction (those screens now live under Settings "More").
+        XCTAssertFalse(app.buttons["dashboard.shortcut.downloads"].exists)
     }
 }

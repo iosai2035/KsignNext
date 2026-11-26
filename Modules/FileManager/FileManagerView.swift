@@ -1,7 +1,9 @@
 import SwiftUI
 
 struct WorkspaceFile: Identifiable, Equatable, Hashable {
-    let id = UUID()
+    /// Stable identity from the file path, so a refresh never regenerates
+    /// the id (and never loses the selection) the way a fresh UUID did.
+    var id: String { url.path }
     let url: URL
     var name: String { url.lastPathComponent }
     var isDirectory: Bool {
@@ -13,6 +15,20 @@ struct WorkspaceFile: Identifiable, Equatable, Hashable {
 }
 
 enum FileSort: String, CaseIterable { case name, size, date }
+
+/// Where a tapped file opens: plists get the plist editor, everything
+/// else opens in the hex editor.
+enum FileDestination: Identifiable {
+    case hex(URL)
+    case plist(URL)
+
+    var id: String {
+        switch self {
+        case .hex(let url): return "hex:\(url.path)"
+        case .plist(let url): return "plist:\(url.path)"
+        }
+    }
+}
 
 @MainActor
 final class FileManagerViewModel: ObservableObject {
@@ -28,6 +44,7 @@ final class FileManagerViewModel: ObservableObject {
     @Published var fileToRename: WorkspaceFile?
     @Published var renameText = ""
     @Published var showDeleteConfirm = false
+    @Published var destination: FileDestination?
 
     init() {
         currentDirectory = Workspace.documents ?? FileManager.default.temporaryDirectory
@@ -56,7 +73,12 @@ final class FileManagerViewModel: ObservableObject {
     }
 
     func open(_ file: WorkspaceFile) {
-        if file.isDirectory { currentDirectory = file.url; refresh() }
+        if file.isDirectory { currentDirectory = file.url; refresh(); return }
+        if file.url.pathExtension.lowercased() == "plist" {
+            destination = .plist(file.url)
+        } else {
+            destination = .hex(file.url)
+        }
     }
 
     func goUp() {
@@ -95,11 +117,20 @@ final class FileManagerViewModel: ObservableObject {
         catch { errorMessage = error.localizedDescription }
     }
 
+    /// Deletes every selected file and reports any failure instead of
+    /// silently dropping it: the error names the files that survived.
     func deleteSelected() {
-        for file in selectedFiles { try? FileManager.default.removeItem(at: file.url) }
+        var failures: [String] = []
+        for file in selectedFiles {
+            do { try FileManager.default.removeItem(at: file.url) }
+            catch { failures.append(file.name) }
+        }
         selectedFiles.removeAll()
         isEditingSelection = false
         refresh()
+        if !failures.isEmpty {
+            errorMessage = String(format: NSLocalizedString("files.error.delete.failed", comment: ""), failures.joined(separator: ", "))
+        }
     }
 }
 
@@ -107,102 +138,122 @@ struct FileManagerView: View {
     @StateObject private var viewModel = FileManagerViewModel()
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if viewModel.filteredFiles.isEmpty {
+        Group {
+            if viewModel.filteredFiles.isEmpty {
+                if !viewModel.searchText.isEmpty && !viewModel.files.isEmpty {
+                    EmptyStateView(
+                        NSLocalizedString("files.search.empty", comment: ""),
+                        systemImage: "magnifyingglass",
+                        description: Text(NSLocalizedString("files.search.empty.detail", comment: ""))
+                    ) {
+                        Button(NSLocalizedString("files.search.clear", comment: "")) { viewModel.searchText = "" }
+                            .dsSecondaryButton()
+                    }
+                } else {
                     EmptyStateView(
                         NSLocalizedString("files.empty", comment: ""),
                         systemImage: "folder",
                         description: Text(NSLocalizedString("files.empty.detail", comment: ""))
-                    )
-                } else {
-                    List(viewModel.filteredFiles, selection: $viewModel.selectedFiles) { file in
-                        Button { viewModel.open(file) } label: {
-                            HStack {
-                                Image(systemName: file.isDirectory ? "folder.fill" : "doc")
-                                    .foregroundStyle(file.isDirectory ? .blue : .secondary)
-                                VStack(alignment: .leading) {
-                                    Text(file.name).lineLimit(1)
-                                    if !file.isDirectory {
-                                        Text(Workspace.fileSizeString(file.size)).font(.caption).foregroundStyle(.secondary)
-                                    }
+                    ) {
+                        Button(NSLocalizedString("files.newfolder", comment: "")) { viewModel.showNewFolderSheet = true }
+                            .dsSecondaryButton()
+                    }
+                }
+            } else {
+                List(viewModel.filteredFiles, selection: $viewModel.selectedFiles) { file in
+                    Button { viewModel.open(file) } label: {
+                        HStack {
+                            Image(systemName: file.isDirectory ? "folder.fill" : "doc")
+                                .foregroundStyle(file.isDirectory ? .blue : .secondary)
+                            VStack(alignment: .leading) {
+                                Text(file.name).lineLimit(1)
+                                if !file.isDirectory {
+                                    Text(Workspace.fileSizeString(file.size)).font(.caption).foregroundStyle(.secondary)
                                 }
                             }
                         }
-                        .accessibilityIdentifier("files.row.\(file.name)")
-                        .swipeActions {
-                            Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) { viewModel.delete(file) }
-                            Button(NSLocalizedString("files.rename", comment: "")) {
-                                viewModel.fileToRename = file
-                                viewModel.renameText = file.name
-                            }
+                    }
+                    .accessibilityIdentifier("files.row.\(file.name)")
+                    .swipeActions {
+                        Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) { viewModel.delete(file) }
+                        Button(NSLocalizedString("files.rename", comment: "")) {
+                            viewModel.fileToRename = file
+                            viewModel.renameText = file.name
                         }
                     }
-                    .environment(\.editMode, .constant(viewModel.isEditingSelection ? .active : .inactive))
                 }
+                .environment(\.editMode, .constant(viewModel.isEditingSelection ? .active : .inactive))
             }
-            .navigationTitle(viewModel.currentDirectory.lastPathComponent)
-            .searchable(text: $viewModel.searchText, prompt: NSLocalizedString("files.search", comment: ""))
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button(NSLocalizedString("files.up", comment: "")) { viewModel.goUp() }
-                        .disabled(viewModel.currentDirectory == Workspace.documents)
-                        .accessibilityIdentifier("files.up")
-                }
-                ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    Menu {
-                        Picker(NSLocalizedString("apps.sort", comment: ""), selection: $viewModel.sort) {
-                            ForEach(FileSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                        }
-                    } label: { Label(NSLocalizedString("apps.sort", comment: ""), systemImage: "arrow.up.arrow.down") }
-                    Button(viewModel.isEditingSelection ? NSLocalizedString("common.done", comment: "") : NSLocalizedString("common.select", comment: "")) {
-                        viewModel.isEditingSelection.toggle()
-                        if !viewModel.isEditingSelection { viewModel.selectedFiles.removeAll() }
-                    }
-                    .accessibilityIdentifier("files.select")
-                    Button(NSLocalizedString("files.newfolder", comment: "")) { viewModel.showNewFolderSheet = true }
-                        .accessibilityIdentifier("files.newFolder")
-                }
-            }
-            .safeAreaInset(edge: .bottom) {
-                if viewModel.isEditingSelection && !viewModel.selectedFiles.isEmpty {
-                    Button(role: .destructive) { viewModel.showDeleteConfirm = true } label: {
-                        Text(String(format: NSLocalizedString("files.delete.selected", comment: ""), viewModel.selectedFiles.count))
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .padding()
-                    .accessibilityIdentifier("files.deleteSelected")
-                }
-            }
-            .onAppear { viewModel.refresh() }
-            .sheet(isPresented: $viewModel.showNewFolderSheet) {
-                NavigationStack {
-                    Form {
-                        TextField(NSLocalizedString("files.folder.name", comment: ""), text: $viewModel.newFolderName)
-                            .accessibilityIdentifier("files.folderNameField")
-                    }
-                    .navigationTitle(NSLocalizedString("files.newfolder", comment: ""))
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) { Button(NSLocalizedString("common.cancel", comment: "")) { viewModel.showNewFolderSheet = false } }
-                        ToolbarItem(placement: .confirmationAction) { Button(NSLocalizedString("common.create", comment: "")) { viewModel.createFolder() } }
-                    }
-                }
-            }
-            .alert(NSLocalizedString("files.rename", comment: ""), isPresented: Binding(get: { viewModel.fileToRename != nil }, set: { if !$0 { viewModel.fileToRename = nil } })) {
-                TextField(NSLocalizedString("files.rename", comment: ""), text: $viewModel.renameText)
-                Button(NSLocalizedString("common.save", comment: "")) {
-                    if let file = viewModel.fileToRename { viewModel.rename(file) }
-                }
-                Button(NSLocalizedString("common.cancel", comment: ""), role: .cancel) { viewModel.fileToRename = nil }
-            }
-            .alert(NSLocalizedString("common.delete.confirm", comment: ""), isPresented: $viewModel.showDeleteConfirm) {
-                Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) { viewModel.deleteSelected() }
-                Button(NSLocalizedString("common.cancel", comment: ""), role: .cancel) {}
-            }
-            .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: Binding(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil } })) {
-                Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
-            } message: { Text(viewModel.errorMessage ?? "") }
         }
+        .navigationTitle(viewModel.currentDirectory.lastPathComponent)
+        .dsInlineTitle()
+        .searchable(text: $viewModel.searchText, prompt: NSLocalizedString("files.search", comment: ""))
+        .navigationDestination(item: $viewModel.destination) { destination in
+            switch destination {
+            case .hex(let url): HexEditorView(fileURL: url)
+            case .plist(let url): PlistEditorView(fileURL: url)
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button(NSLocalizedString("files.up", comment: "")) { viewModel.goUp() }
+                    .disabled(viewModel.currentDirectory == Workspace.documents)
+                    .accessibilityIdentifier("files.up")
+            }
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                Menu {
+                    Picker(NSLocalizedString("apps.sort", comment: ""), selection: $viewModel.sort) {
+                        ForEach(FileSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                } label: { Label(NSLocalizedString("apps.sort", comment: ""), systemImage: "arrow.up.arrow.down") }
+                Button(viewModel.isEditingSelection ? NSLocalizedString("common.done", comment: "") : NSLocalizedString("common.select", comment: "")) {
+                    viewModel.isEditingSelection.toggle()
+                    if !viewModel.isEditingSelection { viewModel.selectedFiles.removeAll() }
+                }
+                .accessibilityIdentifier("files.select")
+                Button(NSLocalizedString("files.newfolder", comment: "")) { viewModel.showNewFolderSheet = true }
+                    .accessibilityIdentifier("files.newFolder")
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if viewModel.isEditingSelection && !viewModel.selectedFiles.isEmpty {
+                Button(role: .destructive) { viewModel.showDeleteConfirm = true } label: {
+                    Text(String(format: NSLocalizedString("files.delete.selected", comment: ""), viewModel.selectedFiles.count))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .padding()
+                .accessibilityIdentifier("files.deleteSelected")
+            }
+        }
+        .onAppear { viewModel.refresh() }
+        .sheet(isPresented: $viewModel.showNewFolderSheet) {
+            NavigationStack {
+                Form {
+                    TextField(NSLocalizedString("files.folder.name", comment: ""), text: $viewModel.newFolderName)
+                        .accessibilityIdentifier("files.folderNameField")
+                }
+                .navigationTitle(NSLocalizedString("files.newfolder", comment: ""))
+                .dsInlineTitle()
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button(NSLocalizedString("common.cancel", comment: "")) { viewModel.showNewFolderSheet = false } }
+                    ToolbarItem(placement: .confirmationAction) { Button(NSLocalizedString("common.create", comment: "")) { viewModel.createFolder() } }
+                }
+            }
+        }
+        .alert(NSLocalizedString("files.rename", comment: ""), isPresented: Binding(get: { viewModel.fileToRename != nil }, set: { if !$0 { viewModel.fileToRename = nil } })) {
+            TextField(NSLocalizedString("files.rename", comment: ""), text: $viewModel.renameText)
+            Button(NSLocalizedString("common.save", comment: "")) {
+                if let file = viewModel.fileToRename { viewModel.rename(file) }
+            }
+            Button(NSLocalizedString("common.cancel", comment: ""), role: .cancel) { viewModel.fileToRename = nil }
+        }
+        .alert(NSLocalizedString("common.delete.confirm", comment: ""), isPresented: $viewModel.showDeleteConfirm) {
+            Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) { viewModel.deleteSelected() }
+            Button(NSLocalizedString("common.cancel", comment: ""), role: .cancel) {}
+        }
+        .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: Binding(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil } })) {
+            Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
+        } message: { Text(viewModel.errorMessage ?? "") }
     }
 }

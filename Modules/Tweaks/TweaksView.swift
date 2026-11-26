@@ -19,7 +19,6 @@ struct TweakAnalysis: Equatable {
 final class TweaksViewModel: ObservableObject {
     @Published var tweaks: [StoredTweak] = []
     @Published var analysis: [UUID: TweakAnalysis] = [:]
-    @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var showImporter = false
 
@@ -60,6 +59,9 @@ final class TweaksViewModel: ObservableObject {
     }
 
     func importTweak(_ url: URL) {
+        guard ["dylib", "deb", "framework", "bundle"].contains(url.pathExtension.lowercased()) else {
+            errorMessage = NSLocalizedString("tweaks.import.unsupported", comment: ""); return
+        }
         guard url.startAccessingSecurityScopedResource() else {
             errorMessage = NSLocalizedString("error.file.access", comment: ""); return
         }
@@ -155,46 +157,54 @@ struct TweaksView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    Label(NSLocalizedString("tweaks.stock.warning", comment: ""), systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                        .font(.caption)
-                }
-                .accessibilityIdentifier("tweaks.stockWarning")
+        List {
+            Section {
+                Label(NSLocalizedString("tweaks.stock.warning", comment: ""), systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .font(.caption)
+            }
+            .accessibilityIdentifier("tweaks.stockWarning")
 
-                if viewModel.tweaks.isEmpty {
-                    emptyState
-                } else {
-                    tweaksList
-                }
+            Section {
+                Text(NSLocalizedString("tweaks.injection.note", comment: ""))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .navigationTitle(NSLocalizedString("tab.tweaks", comment: ""))
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(NSLocalizedString("tweaks.import", comment: "")) { viewModel.showImporter = true }
-                        .accessibilityIdentifier("tweaks.import")
-                }
+
+            if viewModel.tweaks.isEmpty {
+                emptyState
+            } else {
+                tweaksList
             }
-            .fileImporter(isPresented: $viewModel.showImporter, allowedContentTypes: [.init(filenameExtension: "dylib") ?? .data, .init(filenameExtension: "deb") ?? .data], allowsMultipleSelection: false) { result in
-                switch result {
-                case .success(let urls): urls.first.map { viewModel.importTweak($0) }
-                case .failure(let error): viewModel.errorMessage = error.localizedDescription
-                }
-            }
-            .onAppear { viewModel.refresh() }
-            .alert(NSLocalizedString("common.delete.confirm", comment: ""), isPresented: Binding(get: { tweakToDelete != nil }, set: { if !$0 { tweakToDelete = nil } })) {
-                Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) {
-                    if let t = tweakToDelete { viewModel.delete(t) }
-                    tweakToDelete = nil
-                }
-                Button(NSLocalizedString("common.cancel", comment: ""), role: .cancel) { tweakToDelete = nil }
-            }
-            .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: Binding(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil } })) {
-                Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
-            } message: { Text(viewModel.errorMessage ?? "") }
         }
+        .navigationTitle(NSLocalizedString("tab.tweaks", comment: ""))
+        .dsInlineTitle()
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(NSLocalizedString("tweaks.import", comment: "")) { viewModel.showImporter = true }
+                    .accessibilityIdentifier("tweaks.import")
+            }
+        }
+        // Frameworks and bundles are directory packages, so the
+        // importer also accepts folders; importTweak rejects anything
+        // that is not dylib / deb / framework / bundle.
+        .fileImporter(isPresented: $viewModel.showImporter, allowedContentTypes: [.init(filenameExtension: "dylib") ?? .data, .init(filenameExtension: "deb") ?? .data, .folder], allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls): urls.first.map { viewModel.importTweak($0) }
+            case .failure(let error): viewModel.errorMessage = error.localizedDescription
+            }
+        }
+        .onAppear { viewModel.refresh() }
+        .alert(NSLocalizedString("common.delete.confirm", comment: ""), isPresented: Binding(get: { tweakToDelete != nil }, set: { if !$0 { tweakToDelete = nil } })) {
+            Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) {
+                if let t = tweakToDelete { viewModel.delete(t) }
+                tweakToDelete = nil
+            }
+            Button(NSLocalizedString("common.cancel", comment: ""), role: .cancel) { tweakToDelete = nil }
+        }
+        .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: Binding(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil } })) {
+            Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
+        } message: { Text(viewModel.errorMessage ?? "") }
     }
 
     // Branches extracted so the type checker does not have to infer the
@@ -206,7 +216,7 @@ struct TweaksView: View {
             description: Text(NSLocalizedString("tweaks.empty.detail", comment: ""))
         ) {
             Button(NSLocalizedString("tweaks.import", comment: "")) { viewModel.showImporter = true }
-                .buttonStyle(.borderedProminent)
+                .dsPrimaryButton()
                 .accessibilityIdentifier("tweaks.import.empty")
         }
     }
@@ -214,7 +224,7 @@ struct TweaksView: View {
     private var tweaksList: some View {
         Group {
             ForEach(viewModel.tweaks) { tweak in
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: DS.Spacing.sm) {
                     HStack {
                         Text(tweak.name).lineLimit(1)
                         Spacer()
@@ -227,8 +237,10 @@ struct TweaksView: View {
                     }
                     HStack {
                         Button(NSLocalizedString("tweaks.analyse", comment: "")) { viewModel.analyse(tweak) }
+                            .dsPlainButton()
                             .accessibilityIdentifier("tweaks.analyse.\(tweak.name)")
                         Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) { tweakToDelete = tweak }
+                            .dsPlainButton()
                     }
                     .font(.caption)
                 }
@@ -241,11 +253,12 @@ struct TweaksView: View {
                 Button(NSLocalizedString("tweaks.plan.compute", comment: "")) {
                     Task { await viewModel.computePlan() }
                 }
+                .dsPrimaryButton()
                 .disabled(viewModel.selectedAppName.isEmpty || viewModel.isPlanning)
                 if viewModel.isPlanning { ProgressView() }
                 if let plan = viewModel.plan {
                     ForEach(plan.items) { item in
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
                             Text(item.name).font(.caption)
                             Text(item.destinationRelativePath).font(.caption).foregroundStyle(.secondary)
                             if let reason = item.skipReason {

@@ -15,7 +15,7 @@ struct DeviceUDIDSection: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        Section(NSLocalizedString("udid.section", comment: "")) {
+        Section {
             if let saved = store.savedUDID {
                 HStack {
                     Text(NSLocalizedString("udid.saved", comment: ""))
@@ -30,6 +30,7 @@ struct DeviceUDIDSection: View {
                     draft = ""
                     errorMessage = nil
                 }
+                .dsPlainButton()
                 .accessibilityIdentifier("udid.clear")
             } else {
                 Text(NSLocalizedString("udid.empty", comment: ""))
@@ -50,7 +51,7 @@ struct DeviceUDIDSection: View {
                     errorMessage = error.localizedDescription
                 }
             }
-            .buttonStyle(.bordered)
+            .dsSecondaryButton()
             .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             .accessibilityIdentifier("udid.save")
             if let error = errorMessage {
@@ -62,6 +63,8 @@ struct DeviceUDIDSection: View {
             Text(NSLocalizedString("udid.auto.note", comment: ""))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        } header: {
+            Text(NSLocalizedString("udid.section", comment: "")).dsSectionHeader()
         }
     }
 }

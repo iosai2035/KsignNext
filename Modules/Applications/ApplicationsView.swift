@@ -11,7 +11,18 @@ struct StoredApp: Identifiable, Equatable, Hashable {
     var isSigned: Bool { url.path.contains("SignedApps") }
 }
 
-enum AppSort: String, CaseIterable { case name, size, date }
+enum AppSort: String, CaseIterable {
+    case name, size, date
+
+    /// Localized label for the sort picker. Raw values are never shown.
+    var localizedLabel: String {
+        switch self {
+        case .name: NSLocalizedString("apps.sort.name", comment: "")
+        case .size: NSLocalizedString("apps.sort.size", comment: "")
+        case .date: NSLocalizedString("apps.sort.date", comment: "")
+        }
+    }
+}
 
 @MainActor
 final class ApplicationsViewModel: ObservableObject {
@@ -19,7 +30,6 @@ final class ApplicationsViewModel: ObservableObject {
     @Published var searchText = ""
     @Published var sort: AppSort = .name
     @Published var showSignedOnly = false
-    @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var showImporter = false
 
@@ -52,9 +62,9 @@ final class ApplicationsViewModel: ObservableObject {
         return list
     }
 
+    /// A fast synchronous directory scan: no loading flag, so the list
+    /// never flashes an empty state while data loads.
     func refresh() {
-        isLoading = true
-        defer { isLoading = false }
         let fm = FileManager.default
         guard let docs = Workspace.documents else { errorMessage = NSLocalizedString("error.documents.unavailable", comment: ""); return }
         var found: [StoredApp] = []
@@ -72,14 +82,22 @@ final class ApplicationsViewModel: ObservableObject {
     /// copied the file and created no record at all). The validated
     /// file is then also copied into Documents/ImportedApps, which is
     /// where the app list and the Signing Center look for apps.
+    ///
+    /// Security-scoped access starts *before* any read of the file:
+    /// the use case (and the engine inside it) reads the URL first,
+    /// so starting access afterwards could already be too late.
     func importIPA(_ url: URL) async {
+        // Best effort: plain sandbox URLs return false here because
+        // they need no scoped access, so a false result is not an
+        // error — the reads below fail with a real error if the file
+        // genuinely cannot be reached.
+        let scopedAccess = url.startAccessingSecurityScopedResource()
+        defer { if scopedAccess { url.stopAccessingSecurityScopedResource() } }
         do {
             _ = try await container.makeImportIPAUseCase().execute(url: url)
-            guard url.startAccessingSecurityScopedResource() else {
-                errorMessage = NSLocalizedString("error.file.access", comment: ""); return
+            guard let destDir = Workspace.folder("ImportedApps") else {
+                errorMessage = NSLocalizedString("error.documents.unavailable", comment: ""); return
             }
-            defer { url.stopAccessingSecurityScopedResource() }
-            guard let destDir = Workspace.folder("ImportedApps") else { return }
             let dest = destDir.appendingPathComponent(url.lastPathComponent)
             if FileManager.default.fileExists(atPath: dest.path) { try FileManager.default.removeItem(at: dest) }
             try FileManager.default.copyItem(at: url, to: dest)
@@ -89,14 +107,37 @@ final class ApplicationsViewModel: ObservableObject {
         }
     }
 
+    /// Removes the file and its repository record. The record's
+    /// `fileURL` is the engine's workspace copy (a UUID name), not the
+    /// listed file, so matching is by file URL first, then by name.
+    /// Signed apps match by `signedFileURL`. A repository failure is
+    /// surfaced instead of silently leaving a stale record behind.
     func delete(_ app: StoredApp) {
         do {
             try FileManager.default.removeItem(at: app.url)
-            refresh()
-        } catch { errorMessage = error.localizedDescription }
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
+        refresh()
+        Task {
+            do {
+                let imported = try await container.importedApplicationRepository.fetchAll()
+                for record in imported where record.fileURL == app.url || record.name == app.name {
+                    if record.fileURL != app.url {
+                        try? FileManager.default.removeItem(at: record.fileURL)
+                    }
+                    try await container.importedApplicationRepository.delete(id: record.id)
+                }
+                let signed = try await container.signedApplicationRepository.fetchAll()
+                for record in signed where record.signedFileURL == app.url {
+                    try await container.signedApplicationRepository.delete(id: record.id)
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
-
-    func exportURL(for app: StoredApp) -> URL { app.url }
 }
 
 struct ApplicationsView: View {
@@ -113,25 +154,23 @@ struct ApplicationsView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if viewModel.isLoading {
-                    ProgressView(NSLocalizedString("common.loading", comment: "")).accessibilityIdentifier("apps.loading")
-                } else if viewModel.filteredApps.isEmpty {
+                if viewModel.filteredApps.isEmpty {
                     EmptyStateView(
                         NSLocalizedString("apps.empty", comment: ""),
                         systemImage: "app.badge",
                         description: Text(NSLocalizedString("apps.empty.detail", comment: ""))
                     ) {
                         Button(NSLocalizedString("apps.import", comment: "")) { viewModel.showImporter = true }
-                            .buttonStyle(.borderedProminent)
+                            .dsPrimaryButton()
                             .accessibilityIdentifier("apps.import.empty")
                     }
                 } else {
                     List(viewModel.filteredApps) { app in
                         Button { selectedApp = app } label: {
-                            HStack {
+                            HStack(spacing: DS.Spacing.md) {
                                 Image(systemName: app.isSigned ? "checkmark.seal.fill" : "app.badge")
                                     .foregroundStyle(app.isSigned ? .green : .accentColor)
-                                VStack(alignment: .leading) {
+                                VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
                                     Text(app.name).lineLimit(1)
                                     Text(Workspace.fileSizeString(app.size)).font(.caption).foregroundStyle(.secondary)
                                 }
@@ -147,18 +186,20 @@ struct ApplicationsView: View {
                 }
             }
             .navigationTitle(NSLocalizedString("tab.applications", comment: ""))
+            .dsLargeTitle()
             .searchable(text: $viewModel.searchText, prompt: NSLocalizedString("apps.search", comment: ""))
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Menu {
                         Picker(NSLocalizedString("apps.sort", comment: ""), selection: $viewModel.sort) {
-                            ForEach(AppSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                            ForEach(AppSort.allCases, id: \.self) { Text($0.localizedLabel).tag($0) }
                         }
                         Toggle(NSLocalizedString("apps.signed.only", comment: ""), isOn: $viewModel.showSignedOnly)
                     } label: { Label(NSLocalizedString("apps.sort", comment: ""), systemImage: "arrow.up.arrow.down") }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(NSLocalizedString("apps.import", comment: "")) { viewModel.showImporter = true }
+                        .dsPlainButton()
                         .accessibilityIdentifier("apps.import")
                 }
             }

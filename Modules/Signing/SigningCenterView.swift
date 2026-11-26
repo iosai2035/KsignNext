@@ -67,12 +67,17 @@ final class SigningCenterViewModel: ObservableObject {
     @Published var stage = ""
     @Published var logLines: [String] = []
     @Published var isSigning = false
+    @Published var isVerifying = false
+    @Published var signingFailed = false
     @Published var errorMessage: String?
     @Published var signedOutputURL: URL?
     @Published var verificationPassed: Bool?
     @Published var showAppPicker = false
     @Published var showCertPicker = false
     @Published var showProvisionPicker = false
+    @Published private(set) var currentOperationID: UUID?
+
+    private var signingTask: Task<Void, Never>?
 
     private let container: DependencyContainer
     private let signUseCase: SignApplicationUseCase
@@ -106,8 +111,18 @@ final class SigningCenterViewModel: ObservableObject {
         UserDefaults.standard.object(forKey: "ksign.signing.verifyAfterSign") as? Bool ?? true
     }
 
-    var availableApps: [String] { listNames(folder: "ImportedApps", ext: "ipa") }
-    var availableCertificates: [String] { listNames(folder: "Certificates", ext: nil) }
+    /// Apps that can be signed: imported IPAs plus already-signed
+    /// IPAs (re-signing a signed app is a normal flow — it comes in
+    /// preselected from the detail screen). Deduped by file name.
+    var availableApps: [String] {
+        let imported = listNames(folder: "ImportedApps", ext: "ipa")
+        let signed = listNames(folder: "SignedApps", ext: "ipa")
+        return Array(Set(imported + signed)).sorted()
+    }
+    /// Certificate files only. The Certificates folder also holds
+    /// provisioning profiles, which are not certificates and must
+    /// never appear in this picker.
+    var availableCertificates: [String] { listNames(folder: "Certificates", ext: "p12") }
     var availableProvisions: [String] { listNames(folder: "Certificates", ext: "mobileprovision") }
     var availableTweaks: [String] { listNames(folder: "Tweaks", ext: nil) }
 
@@ -158,16 +173,74 @@ final class SigningCenterViewModel: ObservableObject {
     }
 
     func back() {
+        // Back during signing cancels the in-flight run instead of
+        // leaving it running behind the wizard.
+        if step == .progress && isSigning {
+            Task { await cancelSigning() }
+            return
+        }
         if let prev = SigningStep(rawValue: step.rawValue - 1) { step = prev }
+    }
+
+    /// Starts a signing run on a stored task so Back / Cancel can
+    /// stop it while it is in flight.
+    func beginSigning() {
+        signingTask?.cancel()
+        signingTask = Task { await startSigning() }
+    }
+
+    /// Cancels the in-flight signing run (engine + task manager) and
+    /// returns the wizard to the start step.
+    func cancelSigning() async {
+        signingTask?.cancel()
+        if let operationID = currentOperationID {
+            await signUseCase.cancel(operationID: operationID)
+        }
+        isSigning = false
+        currentOperationID = nil
+        stage = NSLocalizedString("signing.stage.cancelled", comment: "")
+        logLines.append(stage)
+        step = .start
+    }
+
+    /// Re-runs signing after a failure, from the wizard's current fields.
+    func retrySigning() {
+        signingFailed = false
+        errorMessage = nil
+        beginSigning()
+    }
+
+    /// Dismisses a signing failure and returns to the start step.
+    func dismissSigningFailure() {
+        signingFailed = false
+        errorMessage = nil
+        step = .start
+    }
+
+    /// Resolves a picked app name to a real file. Imported apps live
+    /// in ImportedApps; an already-signed app (preselected from its
+    /// detail screen) lives in SignedApps, or is found through its
+    /// signing record, which carries the signed output URL.
+    func resolveAppURL(named name: String) async -> URL? {
+        guard let docs = Workspace.documents else { return nil }
+        for folder in ["ImportedApps", "SignedApps"] {
+            let url = docs.appendingPathComponent("\(folder)/\(name)")
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        if let records = try? await container.signedApplicationRepository.fetchAll(),
+           let match = records.first(where: { $0.signedFileURL.lastPathComponent == name }) {
+            return match.signedFileURL
+        }
+        return nil
     }
 
     func startSigning() async {
         guard let docs = Workspace.documents else { return }
-        let appURL = docs.appendingPathComponent("ImportedApps/\(selectedAppName)")
-        guard FileManager.default.fileExists(atPath: appURL.path) else {
+        guard let appURL = await resolveAppURL(named: selectedAppName) else {
             errorMessage = SigningBackendError.noAppSelected.localizedDescription; return
         }
         isSigning = true
+        signingFailed = false
         progress = 0
         stage = NSLocalizedString("signing.stage.preparing", comment: "")
         logLines = [stage]
@@ -175,6 +248,7 @@ final class SigningCenterViewModel: ObservableObject {
         errorMessage = nil
         do {
             let request = try await buildSigningRequest(appURL: appURL, docs: docs)
+            currentOperationID = request.operationID
             let result = try await signUseCase.execute(request) { [weak self] progressEvent in
                 // The progress closure is @Sendable/nonisolated; hop back
                 // to the main actor to touch @Published state.
@@ -193,12 +267,21 @@ final class SigningCenterViewModel: ObservableObject {
             // verificationPassed stays nil until verifySignedApp() runs:
             // signing success is not verification success.
         } catch {
+            // A cancelled run is not a failure: no error alert, no
+            // retry prompt — cancelSigning() already reset the wizard.
+            if Task.isCancelled {
+                isSigning = false
+                currentOperationID = nil
+                return
+            }
             errorMessage = error.localizedDescription
+            signingFailed = true
             stage = NSLocalizedString("signing.stage.failed", comment: "")
             logLines.append(stage)
             verificationPassed = false
         }
         isSigning = false
+        currentOperationID = nil
     }
 
     /// Builds the full signing request from the wizard's fields,
@@ -213,6 +296,11 @@ final class SigningCenterViewModel: ObservableObject {
         if let records = try? await container.importedApplicationRepository.fetchAll(),
            let match = records.first(where: { $0.fileURL.lastPathComponent == selectedAppName }) {
             importedIPAID = match.id
+        } else if let signed = try? await container.signedApplicationRepository.fetchAll(),
+                  let match = signed.first(where: { $0.signedFileURL.lastPathComponent == selectedAppName }) {
+            // Re-signing an already-signed app: the signing record
+            // carries the original imported IPA id.
+            importedIPAID = match.importedIPAID
         } else {
             importedIPAID = UUID()
         }
@@ -288,9 +376,13 @@ final class SigningCenterViewModel: ObservableObject {
     /// signature is present and matches the bundle id").
     func verifySignedApp() {
         guard let output = signedOutputURL else { verificationPassed = false; return }
+        // Busy guard: a second tap while verification is running is ignored.
+        guard !isVerifying else { return }
+        isVerifying = true
         verificationPassed = nil
         errorMessage = nil
         Task {
+            defer { isVerifying = false }
             do {
                 // The signed output is an IPA file, so verifyIPA (not
                 // verifyApp, which takes an extracted .app bundle).
@@ -340,43 +432,54 @@ struct SigningCenterView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 ProgressView(value: Double(viewModel.step.rawValue), total: 12)
-                    .padding(.horizontal)
+                    .padding(.horizontal, DS.Spacing.xl)
                     .accessibilityIdentifier("signing.progress")
                 Text(NSLocalizedString(viewModel.step.titleKey, comment: ""))
-                    .font(.headline)
-                    .padding(.top, 8)
+                    .dsSectionHeader()
+                    .padding(.top, DS.Spacing.md)
                     .accessibilityIdentifier(viewModel.step.accessibilityID)
                 ScrollView {
                     stepContent
-                        .padding()
+                        .padding(DS.Spacing.xl)
                 }
                 HStack {
                     if viewModel.step.rawValue > 1 {
                         Button(NSLocalizedString("common.back", comment: "")) { viewModel.back() }
+                            .dsSecondaryButton()
                             .accessibilityIdentifier("signing.back")
                     }
                     Spacer()
                     if viewModel.step == .start {
                         Button(NSLocalizedString("signing.start", comment: "")) {
-                            Task { await viewModel.startSigning() }
+                            viewModel.beginSigning()
                         }
-                        .buttonStyle(.borderedProminent)
+                        .dsPrimaryButton()
                         .accessibilityIdentifier("signing.start")
                     } else if viewModel.step == .verification {
                         Button(NSLocalizedString("signing.verify", comment: "")) { viewModel.verifySignedApp() }
-                            .buttonStyle(.borderedProminent)
+                            .dsPrimaryButton()
+                            .disabled(viewModel.isVerifying)
                             .accessibilityIdentifier("signing.verify")
                     } else if viewModel.step != .progress {
                         Button(NSLocalizedString("common.next", comment: "")) { viewModel.next() }
-                            .buttonStyle(.borderedProminent)
+                            .dsPrimaryButton()
                             .accessibilityIdentifier("signing.next")
                     }
                 }
-                .padding()
+                .padding(DS.Spacing.xl)
             }
             .navigationTitle(NSLocalizedString("tab.signing", comment: ""))
-            .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: Binding(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil } })) {
-                Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
+            .dsLargeTitle()
+            .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: Binding(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil; viewModel.signingFailed = false } })) {
+                // One alert only: a second `.alert` on the same view
+                // would be ignored. A signing failure offers Retry /
+                // Cancel; any other error offers just OK.
+                if viewModel.signingFailed {
+                    Button(NSLocalizedString("common.retry", comment: "")) { viewModel.retrySigning() }
+                    Button(NSLocalizedString("common.cancel", comment: ""), role: .cancel) { viewModel.dismissSigningFailure() }
+                } else {
+                    Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
+                }
             } message: { Text(viewModel.errorMessage ?? "") }
             .sheet(isPresented: $viewModel.showAppPicker) { pickerSheet(title: NSLocalizedString("signing.pick.app", comment: ""), items: viewModel.availableApps) { viewModel.selectedAppName = $0 } }
             .sheet(isPresented: $viewModel.showCertPicker) { pickerSheet(title: NSLocalizedString("signing.pick.cert", comment: ""), items: viewModel.availableCertificates) { viewModel.selectedCertificateName = $0 } }
@@ -388,46 +491,83 @@ struct SigningCenterView: View {
     private var stepContent: some View {
         switch viewModel.step {
         case .app:
-            pickRow(NSLocalizedString("signing.pick.app", comment: ""), value: viewModel.selectedAppName, empty: NSLocalizedString("apps.empty", comment: "")) { viewModel.showAppPicker = true }
+            if viewModel.availableApps.isEmpty {
+                EmptyStateView(NSLocalizedString("signing.pick.app", comment: ""), systemImage: "app.badge", description: Text(NSLocalizedString("apps.empty", comment: ""))) {
+                    Button(NSLocalizedString("common.choose", comment: "")) { viewModel.showAppPicker = true }
+                        .dsSecondaryButton()
+                        .accessibilityIdentifier("signing.choose")
+                }
+            } else {
+                pickRow(NSLocalizedString("signing.pick.app", comment: ""), value: viewModel.selectedAppName, empty: NSLocalizedString("apps.empty", comment: "")) { viewModel.showAppPicker = true }
+            }
         case .certificate:
-            pickRow(NSLocalizedString("signing.pick.cert", comment: ""), value: viewModel.selectedCertificateName, empty: NSLocalizedString("certs.empty", comment: "")) { viewModel.showCertPicker = true }
+            if viewModel.availableCertificates.isEmpty {
+                EmptyStateView(NSLocalizedString("signing.pick.cert", comment: ""), systemImage: "key", description: Text(NSLocalizedString("certs.empty", comment: ""))) {
+                    Button(NSLocalizedString("common.choose", comment: "")) { viewModel.showCertPicker = true }
+                        .dsSecondaryButton()
+                        .accessibilityIdentifier("signing.choose")
+                }
+            } else {
+                pickRow(NSLocalizedString("signing.pick.cert", comment: ""), value: viewModel.selectedCertificateName, empty: NSLocalizedString("certs.empty", comment: "")) { viewModel.showCertPicker = true }
+            }
         case .provisioning:
-            pickRow(NSLocalizedString("signing.pick.provision", comment: ""), value: viewModel.selectedProvisionName, empty: NSLocalizedString("signing.provision.optional", comment: "")) { viewModel.showProvisionPicker = true }
+            if viewModel.availableProvisions.isEmpty {
+                EmptyStateView(NSLocalizedString("signing.pick.provision", comment: ""), systemImage: "doc.text", description: Text(NSLocalizedString("signing.provision.optional", comment: ""))) {
+                    Button(NSLocalizedString("common.choose", comment: "")) { viewModel.showProvisionPicker = true }
+                        .dsSecondaryButton()
+                        .accessibilityIdentifier("signing.choose")
+                }
+            } else {
+                pickRow(NSLocalizedString("signing.pick.provision", comment: ""), value: viewModel.selectedProvisionName, empty: NSLocalizedString("signing.provision.optional", comment: "")) { viewModel.showProvisionPicker = true }
+            }
         case .bundleID:
-            TextField("com.example.app", text: $viewModel.bundleID)
-                .textFieldStyle(.roundedBorder)
-                .autocapitalization(.none)
-                .accessibilityIdentifier("signing.bundleID")
-            Text(NSLocalizedString("signing.bundleid.help", comment: "")).font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: DS.Spacing.md) {
+                TextField("com.example.app", text: $viewModel.bundleID)
+                    .textFieldStyle(.roundedBorder)
+                    .autocapitalization(.none)
+                    .accessibilityIdentifier("signing.bundleID")
+                Text(NSLocalizedString("signing.bundleid.help", comment: "")).font(.caption).foregroundStyle(.secondary)
+            }
+            .dsCard()
         case .nameVersion:
-            TextField(NSLocalizedString("signing.appname", comment: ""), text: $viewModel.appName)
-                .textFieldStyle(.roundedBorder).accessibilityIdentifier("signing.appName")
-            TextField(NSLocalizedString("signing.appversion", comment: ""), text: $viewModel.appVersion)
-                .textFieldStyle(.roundedBorder).accessibilityIdentifier("signing.appVersion")
+            VStack(alignment: .leading, spacing: DS.Spacing.md) {
+                TextField(NSLocalizedString("signing.appname", comment: ""), text: $viewModel.appName)
+                    .textFieldStyle(.roundedBorder).accessibilityIdentifier("signing.appName")
+                TextField(NSLocalizedString("signing.appversion", comment: ""), text: $viewModel.appVersion)
+                    .textFieldStyle(.roundedBorder).accessibilityIdentifier("signing.appVersion")
+            }
+            .dsCard()
         case .entitlements:
-            TextEditor(text: $viewModel.entitlementsText)
-                .frame(minHeight: 160)
-                .border(Color.secondary.opacity(0.3))
-                .accessibilityIdentifier("signing.entitlements")
-            Text(NSLocalizedString("signing.entitlements.help", comment: "")).font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: DS.Spacing.md) {
+                TextEditor(text: $viewModel.entitlementsText)
+                    .frame(minHeight: 160)
+                    .border(Color.secondary.opacity(0.3))
+                    .accessibilityIdentifier("signing.entitlements")
+                Text(NSLocalizedString("signing.entitlements.help", comment: "")).font(.caption).foregroundStyle(.secondary)
+            }
+            .dsCard()
         case .tweaks:
             if viewModel.availableTweaks.isEmpty {
-                Text(NSLocalizedString("tweaks.empty", comment: "")).foregroundStyle(.secondary)
+                EmptyStateView(NSLocalizedString("tweaks.empty", comment: ""), systemImage: "wrench.and.screwdriver", description: Text(NSLocalizedString("tweaks.empty.detail", comment: "")))
             } else {
-                ForEach(viewModel.availableTweaks, id: \.self) { tweak in
-                    Toggle(tweak, isOn: Binding(
-                        get: { viewModel.selectedTweakNames.contains(tweak) },
-                        set: { on in
-                            if on { viewModel.selectedTweakNames.append(tweak) }
-                            else { viewModel.selectedTweakNames.removeAll { $0 == tweak } }
-                        }
-                    ))
+                VStack(alignment: .leading, spacing: DS.Spacing.md) {
+                    ForEach(viewModel.availableTweaks, id: \.self) { tweak in
+                        Toggle(tweak, isOn: Binding(
+                            get: { viewModel.selectedTweakNames.contains(tweak) },
+                            set: { on in
+                                if on { viewModel.selectedTweakNames.append(tweak) }
+                                else { viewModel.selectedTweakNames.removeAll { $0 == tweak } }
+                            }
+                        ))
+                    }
                 }
+                .dsCard()
             }
         case .summary:
             summaryView
         case .start:
             Text(NSLocalizedString("signing.start.detail", comment: ""))
+                .dsCard()
         case .progress:
             SigningProgressView(progress: viewModel.progress, stage: viewModel.stage, logLines: viewModel.logLines)
         case .verification:
@@ -436,25 +576,29 @@ struct SigningCenterView: View {
                       systemImage: passed ? "checkmark.circle.fill" : "xmark.circle.fill")
                     .foregroundStyle(passed ? .green : .red)
                     .accessibilityIdentifier("signing.verificationResult")
+                    .dsCard()
             } else {
-                Text(NSLocalizedString("signing.verify.pending", comment: ""))
+                EmptyStateView(NSLocalizedString("signing.verify", comment: ""), systemImage: "checkmark.shield", description: Text(NSLocalizedString("signing.verify.pending", comment: "")))
             }
         case .export:
             if let url = viewModel.signedOutputURL {
-                ShareLink(item: url, preview: SharePreview(url.lastPathComponent)) {
-                    Label(NSLocalizedString("common.export", comment: ""), systemImage: "square.and.arrow.up")
+                VStack(alignment: .leading, spacing: DS.Spacing.md) {
+                    ShareLink(item: url, preview: SharePreview(url.lastPathComponent)) {
+                        Label(NSLocalizedString("common.export", comment: ""), systemImage: "square.and.arrow.up")
+                    }
+                    .dsPrimaryButton()
+                    .accessibilityIdentifier("signing.export")
+                    Text(url.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                 }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("signing.export")
-                Text(url.lastPathComponent).font(.caption).foregroundStyle(.secondary)
+                .dsCard()
             } else {
-                Text(NSLocalizedString("signing.error.nooutput", comment: ""))
+                EmptyStateView(NSLocalizedString("common.export", comment: ""), systemImage: "square.and.arrow.up", description: Text(NSLocalizedString("signing.error.nooutput", comment: "")))
             }
         }
     }
 
     private var summaryView: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: DS.Spacing.md) {
             summaryRow(NSLocalizedString("signing.pick.app", comment: ""), viewModel.selectedAppName)
             summaryRow(NSLocalizedString("signing.pick.cert", comment: ""), viewModel.selectedCertificateName)
             summaryRow(NSLocalizedString("signing.pick.provision", comment: ""), viewModel.selectedProvisionName)
@@ -463,6 +607,7 @@ struct SigningCenterView: View {
             summaryRow(NSLocalizedString("signing.appversion", comment: ""), viewModel.appVersion)
             summaryRow(NSLocalizedString("tab.tweaks", comment: ""), viewModel.selectedTweakNames.joined(separator: ", "))
         }
+        .dsCard()
     }
 
     private func summaryRow(_ label: String, _ value: String) -> some View {
@@ -470,13 +615,14 @@ struct SigningCenterView: View {
     }
 
     private func pickRow(_ label: String, value: String, empty: String, action: @escaping () -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(label).font(.headline)
+        VStack(alignment: .leading, spacing: DS.Spacing.md) {
+            Text(label).dsSectionHeader()
             Text(value.isEmpty ? empty : value).foregroundStyle(value.isEmpty ? .secondary : .primary)
             Button(NSLocalizedString("common.choose", comment: ""), action: action)
-                .buttonStyle(.bordered)
+                .dsSecondaryButton()
                 .accessibilityIdentifier("signing.choose")
         }
+        .dsCard()
     }
 
     private func pickerSheet(title: String, items: [String], onPick: @escaping (String) -> Void) -> some View {
@@ -486,7 +632,10 @@ struct SigningCenterView: View {
                     EmptyStateView(title, systemImage: "tray", description: Text(NSLocalizedString("common.no.items", comment: "")))
                 } else {
                     ForEach(items, id: \.self) { item in
-                        Button(item) { onPick(item) }
+                        Button(item) {
+                            onPick(item)
+                            dismissPicker()
+                        }
                             .accessibilityIdentifier("signing.picker.\(item)")
                     }
                 }

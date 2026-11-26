@@ -13,7 +13,6 @@ import Foundation
 /// `ProvisioningEngine`, so the same profile resolves to the same id
 /// at import time and at signing time).
 public final class DependencyContainer {
-    public let configuration: AppConfiguration
     public let persistence: PersistenceController
     public let logs: LogsManager
     public let keychain: KeychainService
@@ -33,7 +32,6 @@ public final class DependencyContainer {
     public var injectionEngine: InjectionEngine
 
     public init(
-        configuration: AppConfiguration = .fromBundle(),
         persistence: PersistenceController = .shared,
         logs: LogsManager = .shared,
         keychain: KeychainService = .shared,
@@ -50,7 +48,6 @@ public final class DependencyContainer {
         sourcesEngine: SourcesEngine? = nil,
         injectionEngine: InjectionEngine? = nil
     ) {
-        self.configuration = configuration
         self.persistence = persistence
         self.logs = logs
         self.keychain = keychain
@@ -163,18 +160,5 @@ public final class DependencyContainer {
 
     public func makeAppleIDSignInUseCase() -> AppleIDSignInUseCase {
         appleIDSignInUseCase
-    }
-
-    @MainActor
-    public func makeAppState() -> AppState {
-        AppState(configuration: configuration)
-    }
-
-    /// Kept for the AppCoordinator builder: returns the shared app
-    /// state for the root view. The coordinator itself is that
-    /// builder's job.
-    @MainActor
-    public func makeRootViewModel() -> AppState {
-        makeAppState()
     }
 }

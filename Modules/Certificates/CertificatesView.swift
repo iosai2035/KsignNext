@@ -11,7 +11,6 @@ struct StoredCertificate: Identifiable, Equatable {
 @MainActor
 final class CertificatesViewModel: ObservableObject {
     @Published var certificates: [StoredCertificate] = []
-    @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var showP12Importer = false
     @Published var showProvisionImporter = false
@@ -22,6 +21,11 @@ final class CertificatesViewModel: ObservableObject {
     /// listed live from Apple's developer service when signed in.
     @Published var devCertificates: [DevelopmentCertificate] = []
     @Published var devCertificatesLoading = false
+    /// True once the first dev-certificate load has finished (success
+    /// or failure). The list screen waits for this before showing an
+    /// empty state, so a signed-in user never sees a flashing
+    /// "no certificates" state while the load is still in flight.
+    @Published var devCertificatesLoaded = false
     @Published var isCreatingDevCertificate = false
 
     /// True when an Apple ID session exists (the live client is
@@ -34,13 +38,24 @@ final class CertificatesViewModel: ObservableObject {
 
     /// Lists the account's iOS development certificates from Apple.
     /// A live sign-in is required; without one the list is empty.
+    /// (A background refresh, not a user action, so not being signed
+    /// in stays silent here; a missing team on a signed-in account
+    /// is a real error and is reported.)
     func loadDevCertificates() async {
         guard isSignedIn else { devCertificates = []; return }
+        devCertificatesLoaded = false
         devCertificatesLoading = true
-        defer { devCertificatesLoading = false }
+        defer {
+            devCertificatesLoading = false
+            devCertificatesLoaded = true
+        }
         do {
             let service = developerService()
-            guard let team = try await service.firstTeam() else { devCertificates = []; return }
+            guard let team = try await service.firstTeam() else {
+                devCertificates = []
+                errorMessage = NSLocalizedString("certs.error.noTeam", comment: "")
+                return
+            }
             devCertificates = try await service.listCertificates(teamID: team.teamID)
         } catch {
             errorMessage = error.localizedDescription
@@ -52,13 +67,22 @@ final class CertificatesViewModel: ObservableObject {
     /// sign apps. On the certificate limit (7460) this fails with
     /// the limit message — revoke an old certificate below first.
     func createDevCertificate() async {
-        guard isSignedIn else { return }
+        guard isSignedIn else {
+            errorMessage = NSLocalizedString("certs.error.notSignedIn", comment: "")
+            return
+        }
         isCreatingDevCertificate = true
         defer { isCreatingDevCertificate = false }
         do {
             let service = developerService()
-            guard let team = try await service.firstTeam() else { return }
-            guard let email = container.appleIDSessionStore.loadSession()?.email else { return }
+            guard let team = try await service.firstTeam() else {
+                errorMessage = NSLocalizedString("certs.error.noTeam", comment: "")
+                return
+            }
+            guard let email = container.appleIDSessionStore.loadSession()?.email else {
+                errorMessage = NSLocalizedString("certs.error.noEmail", comment: "")
+                return
+            }
             let created = try await service.createCertificate(teamID: team.teamID, email: email)
             let tempURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("KsignNext-Development-\(UUID().uuidString).p12")
@@ -79,10 +103,20 @@ final class CertificatesViewModel: ObservableObject {
     /// serial number). The matching local .p12, if any, stays —
     /// delete it from the list above when it is no longer needed.
     func revokeDevCertificate(_ cert: DevelopmentCertificate) async {
-        guard let serial = cert.serialNumber, isSignedIn else { return }
+        guard isSignedIn else {
+            errorMessage = NSLocalizedString("certs.error.notSignedIn", comment: "")
+            return
+        }
+        guard let serial = cert.serialNumber else {
+            errorMessage = NSLocalizedString("certs.error.noSerial", comment: "")
+            return
+        }
         do {
             let service = developerService()
-            guard let team = try await service.firstTeam() else { return }
+            guard let team = try await service.firstTeam() else {
+                errorMessage = NSLocalizedString("certs.error.noTeam", comment: "")
+                return
+            }
             try await service.revokeCertificate(teamID: team.teamID, serialNumber: serial)
             await loadDevCertificates()
         } catch {
@@ -110,10 +144,14 @@ final class CertificatesViewModel: ObservableObject {
         self.certificateRepository = certificateRepository ?? container.certificateRepository
     }
 
+    /// Synchronous directory listing — it is a fast local read, so
+    /// there is no loading state here (a spinner around it only
+    /// flashed). The async loads above keep their own flags.
     func refresh() {
-        isLoading = true
-        defer { isLoading = false }
-        guard let dir = Workspace.folder("Certificates") else { return }
+        guard let dir = Workspace.folder("Certificates") else {
+            errorMessage = NSLocalizedString("certs.error.storage", comment: "")
+            return
+        }
         let items = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         certificates = items.filter { ["p12", "mobileprovision"].contains($0.pathExtension.lowercased()) }
             .map { StoredCertificate(url: $0) }
@@ -125,7 +163,10 @@ final class CertificatesViewModel: ObservableObject {
             errorMessage = NSLocalizedString("error.file.access", comment: ""); return
         }
         defer { url.stopAccessingSecurityScopedResource() }
-        guard let destDir = Workspace.folder("Certificates") else { return }
+        guard let destDir = Workspace.folder("Certificates") else {
+            errorMessage = NSLocalizedString("certs.error.storage", comment: "")
+            return
+        }
         let dest = destDir.appendingPathComponent(url.lastPathComponent)
         do {
             if FileManager.default.fileExists(atPath: dest.path) { try FileManager.default.removeItem(at: dest) }
@@ -177,23 +218,41 @@ final class CertificatesViewModel: ObservableObject {
     }
 
     /// Validates a P12 with the in-memory password via SecPKCS12Import. Password is never stored.
+    /// The password is deliberately NOT cleared here: the sheet's
+    /// confirm action calls `importFile` right after a successful
+    /// validation, and `importFile` reads `p12Password` to register
+    /// the certificate (engine import + repository save + Keychain).
+    /// Clearing it here used to make every manual P12 import silently
+    /// skip registration. `importFile` clears it once consumed.
+    /// On failure the password is kept so the user can retry.
     func validateP12() -> Result<String, Error> {
         guard let url = pendingP12URL, let data = try? Data(contentsOf: url) else {
             return .failure(NSError(domain: "KsignNext", code: 1, userInfo: [NSLocalizedDescriptionKey: NSLocalizedString("cert.error.read", comment: "")]))
         }
         var items: CFArray?
         let status = SecPKCS12Import(data as CFData, [kSecImportExportPassphrase as String: p12Password] as CFDictionary, &items)
-        p12Password = ""
         if status != errSecSuccess {
             return .failure(NSError(domain: "KsignNext", code: Int(status), userInfo: [NSLocalizedDescriptionKey: NSLocalizedString("cert.error.password", comment: "")]))
         }
         return .success(NSLocalizedString("cert.valid", comment: ""))
+    }
+
+    /// Clears all password-sheet state (pending file, typed password,
+    /// validation result). Called on Cancel and after a successful
+    /// import, so a stale URL or password can never leak into the
+    /// next import.
+    func clearPasswordSheetState() {
+        pendingP12URL = nil
+        p12Password = ""
+        // validationResult lives in the view; the view clears it
+        // alongside this call (see CertificatesView.passwordSheet).
     }
 }
 
 struct CertificatesView: View {
     @StateObject private var viewModel: CertificatesViewModel
     @State private var certToDelete: StoredCertificate?
+    @State private var certToRevoke: DevelopmentCertificate?
     @State private var selectedCert: StoredCertificate?
     @State private var showPasswordSheet = false
     @State private var validationResult: String?
@@ -207,8 +266,17 @@ struct CertificatesView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if viewModel.certificates.isEmpty && !viewModel.isSignedIn {
-                    emptyState
+                if viewModel.certificates.isEmpty && viewModel.devCertificates.isEmpty {
+                    if !viewModel.isSignedIn {
+                        emptyState
+                    } else if !viewModel.devCertificatesLoaded {
+                        // Signed in but the live list has not answered
+                        // yet: a spinner, never a flashing empty state.
+                        ProgressView(NSLocalizedString("common.loading", comment: ""))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        signedInEmptyState
+                    }
                 } else {
                     List {
                         devCertificatesSection
@@ -217,6 +285,7 @@ struct CertificatesView: View {
                 }
             }
             .navigationTitle(NSLocalizedString("tab.certificates", comment: ""))
+            .dsLargeTitle()
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Menu(NSLocalizedString("certs.import", comment: "")) {
@@ -252,6 +321,13 @@ struct CertificatesView: View {
                 }
                 Button(NSLocalizedString("common.cancel", comment: ""), role: .cancel) { certToDelete = nil }
             }
+            .alert(NSLocalizedString("certs.dev.revoke.confirm", comment: ""), isPresented: Binding(get: { certToRevoke != nil }, set: { if !$0 { certToRevoke = nil } })) {
+                Button(NSLocalizedString("common.revoke", comment: ""), role: .destructive) {
+                    if let c = certToRevoke { Task { await viewModel.revokeDevCertificate(c) } }
+                    certToRevoke = nil
+                }
+                Button(NSLocalizedString("common.cancel", comment: ""), role: .cancel) { certToRevoke = nil }
+            }
             .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: Binding(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil } })) {
                 Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
             } message: { Text(viewModel.errorMessage ?? "") }
@@ -270,7 +346,7 @@ struct CertificatesView: View {
     /// Shown only when signed in; creating one here is what the
     /// real refresh does automatically on first refresh.
     private var devCertificatesSection: some View {
-        Section(NSLocalizedString("certs.dev.title", comment: "")) {
+        Section {
             if !viewModel.isSignedIn {
                 Text(NSLocalizedString("certs.dev.signin", comment: ""))
                     .font(.caption)
@@ -278,9 +354,12 @@ struct CertificatesView: View {
             } else if viewModel.devCertificatesLoading {
                 ProgressView()
             } else {
-                ForEach(viewModel.devCertificates, id: \.serialNumber) { cert in
+                // No single field is a stable unique key: certificateID
+                // and serialNumber are both optional on the account
+                // model, so the list position is the unique id.
+                ForEach(Array(viewModel.devCertificates.enumerated()), id: \.offset) { _, cert in
                     HStack {
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
                             Text(cert.name ?? NSLocalizedString("certs.dev.unnamed", comment: ""))
                                 .font(.subheadline)
                             if let machine = cert.machineName {
@@ -295,38 +374,40 @@ struct CertificatesView: View {
                         }
                         Spacer()
                         Button(NSLocalizedString("common.revoke", comment: ""), role: .destructive) {
-                            Task { await viewModel.revokeDevCertificate(cert) }
+                            certToRevoke = cert
                         }
-                        .buttonStyle(.bordered)
+                        .dsSecondaryButton()
                         .accessibilityIdentifier("certs.dev.revoke")
                     }
                 }
                 Button(NSLocalizedString("certs.dev.create", comment: "")) {
                     Task { await viewModel.createDevCertificate() }
                 }
-                .buttonStyle(.borderedProminent)
+                .dsPrimaryButton()
                 .disabled(viewModel.isCreatingDevCertificate)
                 .accessibilityIdentifier("certs.dev.create")
                 if viewModel.isCreatingDevCertificate {
                     ProgressView(NSLocalizedString("certs.dev.creating", comment: ""))
                 }
             }
+        } header: {
+            Text(NSLocalizedString("certs.dev.title", comment: "")).dsSectionHeader()
         }
     }
 
     /// The locally stored certificates, as rows in the same List
     /// as the dev section (never a nested List).
     private var localCertificatesSection: some View {
-        Section(NSLocalizedString("certs.local.title", comment: "")) {
+        Section {
             if viewModel.certificates.isEmpty {
                 Text(NSLocalizedString("certs.empty", comment: ""))
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(viewModel.certificates) { cert in
                     Button { selectedCert = cert } label: {
-                        HStack {
+                        HStack(spacing: DS.Spacing.md) {
                             Image(systemName: cert.kind == "P12" ? "key.fill" : "doc.badge.gearshape")
-                            VStack(alignment: .leading) {
+                            VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
                                 Text(cert.name).lineLimit(1)
                                 Text(cert.kind).font(.caption).foregroundStyle(.secondary)
                             }
@@ -338,6 +419,8 @@ struct CertificatesView: View {
                     }
                 }
             }
+        } header: {
+            Text(NSLocalizedString("certs.local.title", comment: "")).dsSectionHeader()
         }
     }
 
@@ -348,8 +431,29 @@ struct CertificatesView: View {
             description: Text(NSLocalizedString("certs.empty.detail", comment: ""))
         ) {
             Button(NSLocalizedString("certs.import.p12", comment: "")) { viewModel.showP12Importer = true }
-                .buttonStyle(.borderedProminent)
+                .dsPrimaryButton()
                 .accessibilityIdentifier("certs.import.empty")
+        }
+    }
+
+    /// Signed in, live list loaded, and nothing stored anywhere yet:
+    /// the same empty state, with Import as the next step and creating
+    /// an on-device certificate as the alternative.
+    private var signedInEmptyState: some View {
+        EmptyStateView(
+            NSLocalizedString("certs.empty", comment: ""),
+            systemImage: "key.fill",
+            description: Text(NSLocalizedString("certs.empty.detail", comment: ""))
+        ) {
+            Button(NSLocalizedString("certs.import.p12", comment: "")) { viewModel.showP12Importer = true }
+                .dsPrimaryButton()
+                .accessibilityIdentifier("certs.import.empty")
+            Button(NSLocalizedString("certs.dev.create", comment: "")) {
+                Task { await viewModel.createDevCertificate() }
+            }
+            .dsSecondaryButton()
+            .disabled(viewModel.isCreatingDevCertificate)
+            .accessibilityIdentifier("certs.dev.create.empty")
         }
     }
 
@@ -365,7 +469,11 @@ struct CertificatesView: View {
             .navigationTitle(NSLocalizedString("certs.import.p12", comment: ""))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(NSLocalizedString("common.cancel", comment: "")) { viewModel.p12Password = ""; showPasswordSheet = false }
+                    Button(NSLocalizedString("common.cancel", comment: "")) {
+                        viewModel.clearPasswordSheetState()
+                        validationResult = nil
+                        showPasswordSheet = false
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(NSLocalizedString("cert.validate", comment: "")) {
@@ -373,6 +481,11 @@ struct CertificatesView: View {
                         case .success(let message):
                             validationResult = message
                             if let url = viewModel.pendingP12URL { viewModel.importFile(url) }
+                            // importFile consumed the password; no
+                            // sheet state may survive into the next
+                            // import.
+                            viewModel.clearPasswordSheetState()
+                            validationResult = nil
                             showPasswordSheet = false
                         case .failure(let error):
                             validationResult = error.localizedDescription

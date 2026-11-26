@@ -1,16 +1,41 @@
 import SwiftUI
 
 enum AppLogLevel: String, CaseIterable, Identifiable {
-    case debug, info, warning, error
+    case debug, info, warning, error, critical
     var id: String { rawValue }
-    var title: String { rawValue.capitalized }
+
+    /// Localized level name (keys: `logs.level.<rawValue>`).
+    var title: String {
+        NSLocalizedString("logs.level.\(rawValue)", comment: "")
+    }
+
+    init(from level: LogLevel) {
+        switch level {
+        case .debug: self = .debug
+        case .info: self = .info
+        case .warning: self = .warning
+        case .error: self = .error
+        case .critical: self = .critical
+        }
+    }
 }
 
 struct AppLogEntry: Identifiable, Equatable {
-    let id = UUID()
+    let id: UUID
     var level: AppLogLevel
     var message: String
     var date: Date
+
+    init(id: UUID = UUID(), level: AppLogLevel, message: String, date: Date) {
+        self.id = id
+        self.level = level
+        self.message = message
+        self.date = date
+    }
+
+    init(from entry: LogEntry) {
+        self.init(id: entry.id, level: AppLogLevel(from: entry.level), message: entry.message, date: entry.timestamp)
+    }
 }
 
 @MainActor
@@ -19,11 +44,13 @@ final class LogsViewModel: ObservableObject {
     @Published var selectedLevel: AppLogLevel?
     @Published var searchText = ""
     @Published var isLoading = false
+    /// True once the first load has finished; the empty state is only
+    /// shown after this, so it never flashes while data is loading.
+    @Published var hasLoaded = false
     @Published var errorMessage: String?
-
-    var logURL: URL? {
-        Workspace.folder("Logs")?.appendingPathComponent("app.log")
-    }
+    /// Shareable export of the loaded entries, written to a temp file
+    /// on each refresh (the persisted log file itself is not shared).
+    @Published var exportURL: URL?
 
     var filteredEntries: [AppLogEntry] {
         var list = entries
@@ -32,42 +59,36 @@ final class LogsViewModel: ObservableObject {
         return list
     }
 
-    func refresh() {
+    /// Reads the real persisted entries from `LogsManager`
+    /// (Application Support/KsignNext/logs.jsonl), newest first.
+    /// The in-memory buffer is empty on a fresh launch until
+    /// `loadPersistedEntries()` runs, so this always loads first.
+    func refresh() async {
+        guard !isLoading else { return }
         isLoading = true
-        defer { isLoading = false }
-        guard let url = logURL, let text = try? String(contentsOf: url, encoding: .utf8) else {
-            entries = []
-            return
-        }
-        entries = text.split(separator: "\n").map { line in
-            let parts = line.split(separator: " ", maxSplits: 2)
-            let level = parts.count > 1 ? (AppLogLevel(rawValue: parts[1].lowercased()) ?? .info) : .info
-            return AppLogEntry(level: level, message: String(line), date: Date())
-        }
+        defer { isLoading = false; hasLoaded = true }
+        await LogsManager.shared.loadPersistedEntries()
+        let loaded = await LogsManager.shared.allEntries()
+        entries = loaded.reversed().map(AppLogEntry.init(from:))
+        exportURL = makeExportURL()
     }
 
-    func append(level: AppLogLevel, message: String) {
-        guard let url = logURL else { return }
-        let line = "\(ISO8601DateFormatter().string(from: Date())) \(level.rawValue.uppercased()) \(message)\n"
-        if FileManager.default.fileExists(atPath: url.path) {
-            guard let handle = try? FileHandle(forWritingTo: url) else { return }
-            defer { try? handle.close() }
-            try? handle.seekToEnd()
-            try? handle.write(contentsOf: Data(line.utf8))
-        } else {
-            try? line.write(to: url, atomically: true, encoding: .utf8)
-        }
-        refresh()
+    /// Clears the persisted log through `LogsManager` (in-memory
+    /// entries and the logs.jsonl file).
+    func clear() async {
+        isLoading = true
+        defer { isLoading = false; hasLoaded = true }
+        await LogsManager.shared.clear()
+        entries = []
+        exportURL = nil
     }
 
-    func exportURL() -> URL? { logURL }
-
-    func clear() {
-        guard let url = logURL else { return }
-        do {
-            try "".write(to: url, atomically: true, encoding: .utf8)
-            entries = []
-        } catch { errorMessage = error.localizedDescription }
+    private func makeExportURL() -> URL? {
+        let text = entries.reversed().map { entry in
+            "\(ISO8601DateFormatter().string(from: entry.date)) [\(entry.level.rawValue.uppercased())] \(entry.message)"
+        }.joined(separator: "\n")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("KsignNext-logs.txt")
+        return (try? text.write(to: url, atomically: true, encoding: .utf8)) == nil ? nil : url
     }
 }
 
@@ -75,58 +96,78 @@ struct LogsView: View {
     @StateObject private var viewModel = LogsViewModel()
     @State private var showClearConfirm = false
 
+    // No NavigationStack here: this screen is pushed from Settings
+    // ("More"), which provides the navigation stack.
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                Picker(NSLocalizedString("logs.filter", comment: ""), selection: $viewModel.selectedLevel) {
-                    Text(NSLocalizedString("logs.filter.all", comment: "")).tag(AppLogLevel?.none)
-                    ForEach(AppLogLevel.allCases) { Text($0.title).tag(AppLogLevel?.some($0)) }
+        VStack(spacing: DS.Spacing.md) {
+            Picker(NSLocalizedString("logs.filter", comment: ""), selection: $viewModel.selectedLevel) {
+                Text(NSLocalizedString("logs.filter.all", comment: "")).tag(AppLogLevel?.none)
+                ForEach(AppLogLevel.allCases) { Text($0.title).tag(AppLogLevel?.some($0)) }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, DS.Spacing.xl)
+            if !viewModel.hasLoaded {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityIdentifier("logs.loading")
+            } else if viewModel.filteredEntries.isEmpty {
+                EmptyStateView(
+                    NSLocalizedString("logs.empty", comment: ""),
+                    systemImage: "list.bullet.rectangle",
+                    description: Text(NSLocalizedString("logs.empty.detail", comment: ""))
+                ) {
+                    Button(NSLocalizedString("common.refresh", comment: "")) {
+                        Task { await viewModel.refresh() }
+                    }
+                    .dsSecondaryButton()
+                    .accessibilityIdentifier("logs.refresh.empty")
                 }
-                .pickerStyle(.segmented)
-                .padding()
-                if viewModel.filteredEntries.isEmpty {
-                    EmptyStateView(
-                        NSLocalizedString("logs.empty", comment: ""),
-                        systemImage: "list.bullet.rectangle",
-                        description: Text(NSLocalizedString("logs.empty.detail", comment: ""))
-                    )
-                } else {
-                    List(viewModel.filteredEntries) { entry in
-                        HStack(alignment: .top) {
-                            Text(entry.level.rawValue.uppercased())
-                                .font(.caption.bold())
-                                .foregroundStyle(levelColor(entry.level))
-                                .frame(width: 64, alignment: .leading)
+            } else {
+                List(viewModel.filteredEntries) { entry in
+                    HStack(alignment: .top, spacing: DS.Spacing.md) {
+                        Text(entry.level.title)
+                            .font(.caption.bold())
+                            .foregroundStyle(levelColor(entry.level))
+                            .frame(width: 64, alignment: .leading)
+                        VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
                             Text(entry.message).font(.caption.monospaced())
+                            Text(entry.date, format: .dateTime.day().month().hour().minute())
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
+                .listStyle(.plain)
+                .refreshable { await viewModel.refresh() }
             }
-            .navigationTitle(NSLocalizedString("tab.logs", comment: ""))
-            .searchable(text: $viewModel.searchText, prompt: NSLocalizedString("logs.search", comment: ""))
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    if let url = viewModel.exportURL() {
-                        ShareLink(item: url, preview: SharePreview("app.log")) {
-                            Label(NSLocalizedString("common.export", comment: ""), systemImage: "square.and.arrow.up")
-                        }
-                        .accessibilityIdentifier("logs.export")
-                    }
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(NSLocalizedString("logs.clear", comment: ""), role: .destructive) { showClearConfirm = true }
-                        .accessibilityIdentifier("logs.clear")
-                }
-            }
-            .onAppear { viewModel.refresh() }
-            .alert(NSLocalizedString("logs.clear.confirm", comment: ""), isPresented: $showClearConfirm) {
-                Button(NSLocalizedString("logs.clear", comment: ""), role: .destructive) { viewModel.clear() }
-                Button(NSLocalizedString("common.cancel", comment: ""), role: .cancel) {}
-            }
-            .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: Binding(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil } })) {
-                Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
-            } message: { Text(viewModel.errorMessage ?? "") }
         }
+        .navigationTitle(NSLocalizedString("tab.logs", comment: ""))
+        .dsInlineTitle()
+        .searchable(text: $viewModel.searchText, prompt: NSLocalizedString("logs.search", comment: ""))
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                if let url = viewModel.exportURL {
+                    ShareLink(item: url, preview: SharePreview("KsignNext-logs.txt")) {
+                        Label(NSLocalizedString("common.export", comment: ""), systemImage: "square.and.arrow.up")
+                    }
+                    .accessibilityIdentifier("logs.export")
+                }
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(NSLocalizedString("logs.clear", comment: ""), role: .destructive) { showClearConfirm = true }
+                    .accessibilityIdentifier("logs.clear")
+            }
+        }
+        .task { await viewModel.refresh() }
+        .alert(NSLocalizedString("logs.clear.confirm", comment: ""), isPresented: $showClearConfirm) {
+            Button(NSLocalizedString("logs.clear", comment: ""), role: .destructive) {
+                Task { await viewModel.clear() }
+            }
+            Button(NSLocalizedString("common.cancel", comment: ""), role: .cancel) {}
+        }
+        .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: Binding(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil } })) {
+            Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
+        } message: { Text(viewModel.errorMessage ?? "") }
     }
 
     private func levelColor(_ level: AppLogLevel) -> Color {
@@ -134,7 +175,7 @@ struct LogsView: View {
         case .debug: return .secondary
         case .info: return .blue
         case .warning: return .orange
-        case .error: return .red
+        case .error, .critical: return .red
         }
     }
 }

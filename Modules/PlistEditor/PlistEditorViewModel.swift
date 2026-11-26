@@ -8,21 +8,25 @@ final class PlistEditorViewModel: ObservableObject {
     @Published var root: [String: Any] = [:]
     @Published var isArrayRoot = false
     @Published var arrayRoot: [Any] = []
-    @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var canUndo = false
     @Published var canRedo = false
     @Published var lastValidationError: String?
+    /// Increments on every committed document change, so the view can
+    /// clear transient UI (e.g. the "saved" banner) on the next edit.
+    @Published var revision = 0
 
     private var undoStack: [Data] = []
     private var redoStack: [Data] = []
+    /// True while a text field is being edited: the snapshot is taken
+    /// once when editing begins, not once per keystroke.
+    private var editSessionOpen = false
 
     var isEmpty: Bool { root.isEmpty && arrayRoot.isEmpty }
 
     func open(_ url: URL) {
         fileURL = url
-        isLoading = true
-        defer { isLoading = false }
+        // Synchronous local read: no loading state is shown for it.
         guard let data = try? Data(contentsOf: url) else {
             errorMessage = NSLocalizedString("error.file.read", comment: ""); return
         }
@@ -47,14 +51,36 @@ final class PlistEditorViewModel: ObservableObject {
 
     func currentPlist() -> Any { isArrayRoot ? arrayRoot : root }
 
-    func setValue(key: String, value: Any) {
+    /// Begins a text-edit session: takes the undo snapshot once. A
+    /// matching `endEdit()` closes the session. `setValue` outside a
+    /// session still snapshots, so single programmatic edits keep one
+    /// undo step each.
+    func beginEdit() {
+        guard !editSessionOpen else { return }
+        editSessionOpen = true
         snapshot()
+    }
+
+    func endEdit() { editSessionOpen = false }
+
+    func setValue(key: String, value: Any) {
+        if !editSessionOpen { snapshot() }
         root[key] = value
+        revision += 1
+    }
+
+    /// Edits one scalar item of an array-root plist.
+    func setArrayValue(index: Int, value: Any) {
+        guard arrayRoot.indices.contains(index) else { return }
+        if !editSessionOpen { snapshot() }
+        arrayRoot[index] = value
+        revision += 1
     }
 
     func deleteKey(_ key: String) {
         snapshot()
         root.removeValue(forKey: key)
+        revision += 1
     }
 
     func addKey(_ key: String, value: Any = "") {
@@ -63,6 +89,7 @@ final class PlistEditorViewModel: ObservableObject {
         }
         snapshot()
         root[key] = value
+        revision += 1
     }
 
     func validate() -> Bool {
@@ -97,12 +124,30 @@ final class PlistEditorViewModel: ObservableObject {
         return try? PropertyListSerialization.data(fromPropertyList: currentPlist(), format: .xml, options: 0)
     }
 
+    /// Writes the current plist to a real `.plist` file in the temp
+    /// directory (named after the edited file), so sharing carries a
+    /// filename and the `.plist` type instead of anonymous raw data.
+    func exportURL() -> URL? {
+        guard let data = exportData() else { return nil }
+        let name = fileURL?.lastPathComponent ?? "export.plist"
+        let fileName = name.lowercased().hasSuffix(".plist") ? name : "\(name).plist"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
     func undo() {
         guard let data = undoStack.popLast() else { return }
         if let current = try? PropertyListSerialization.data(fromPropertyList: currentPlist(), format: .xml, options: 0) {
             redoStack.append(current)
         }
         apply(data)
+        revision += 1
         canUndo = !undoStack.isEmpty
         canRedo = true
     }
@@ -113,6 +158,7 @@ final class PlistEditorViewModel: ObservableObject {
             undoStack.append(current)
         }
         apply(data)
+        revision += 1
         canUndo = true
         canRedo = !redoStack.isEmpty
     }

@@ -24,15 +24,33 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    /// Clears the real caches: Library/Caches, the system temp directory
+    /// and the app's own temp workspace (Documents/KsignNext/Temp).
+    /// Deliberately NOT Documents/Inbox: that holds incoming files the
+    /// user asked to import, not cache data.
     func clearCaches() {
-        guard let docs = Workspace.documents else { return }
-        let cacheDir = docs.appendingPathComponent("Cache", isDirectory: true)
-        do {
-            if FileManager.default.fileExists(atPath: cacheDir.path) {
-                try FileManager.default.removeItem(at: cacheDir)
+        let fm = FileManager.default
+        var firstError: Error?
+        func removeContents(of directory: URL) {
+            guard let items = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
+            for item in items {
+                do { try fm.removeItem(at: item) } catch {
+                    if firstError == nil { firstError = error }
+                }
             }
+        }
+        if let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            removeContents(of: caches)
+        }
+        removeContents(of: fm.temporaryDirectory)
+        if let docs = Workspace.documents {
+            removeContents(of: docs.appendingPathComponent("KsignNext/Temp", isDirectory: true))
+        }
+        if let error = firstError {
+            errorMessage = error.localizedDescription
+        } else {
             refreshStorage()
-        } catch { errorMessage = error.localizedDescription }
+        }
     }
 }
 
@@ -49,7 +67,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section(NSLocalizedString("settings.section.language", comment: "")) {
+                Section(header: Text(NSLocalizedString("settings.section.language", comment: "")).dsSectionHeader()) {
                     Picker(NSLocalizedString("settings.language", comment: ""), selection: $language) {
                         Text("English").tag("en")
                         Text("العربية").tag("ar")
@@ -62,7 +80,7 @@ struct SettingsView: View {
                     }
                     .accessibilityIdentifier("settings.appearance")
                 }
-                Section(NSLocalizedString("settings.section.storage", comment: "")) {
+                Section(header: Text(NSLocalizedString("settings.section.storage", comment: "")).dsSectionHeader()) {
                     HStack {
                         Text(NSLocalizedString("settings.storage.used", comment: ""))
                         Spacer()
@@ -74,41 +92,44 @@ struct SettingsView: View {
                         Text(Workspace.fileSizeString(viewModel.storageFree))
                     }
                     Button(NSLocalizedString("settings.storage.clear", comment: "")) { showClearConfirm = true }
+                        .dsPrimaryButton()
+                        .tint(.red)
                         .accessibilityIdentifier("settings.clearCache")
                 }
-                Section(NSLocalizedString("settings.section.downloads", comment: "")) {
+                Section(header: Text(NSLocalizedString("settings.section.downloads", comment: "")).dsSectionHeader()) {
                     Stepper(value: $maxConcurrent, in: 1...5) {
                         Text(String(format: NSLocalizedString("settings.downloads.concurrent", comment: ""), maxConcurrent))
                     }
                 }
-                Section(NSLocalizedString("settings.section.signing", comment: "")) {
+                Section(header: Text(NSLocalizedString("settings.section.signing", comment: "")).dsSectionHeader()) {
                     Toggle(NSLocalizedString("settings.signing.verify", comment: ""), isOn: $verifyAfterSign)
                 }
-                Section(NSLocalizedString("settings.section.appleid", comment: "")) {
+                Section(header: Text(NSLocalizedString("settings.section.appleid", comment: "")).dsSectionHeader()) {
                     NavigationLink(NSLocalizedString("appleid.title", comment: "")) {
                         AppleIDSignInView(useCase: coordinator.container.makeAppleIDSignInUseCase())
                     }
                 }
-                Section(NSLocalizedString("settings.section.install", comment: "")) {
+                Section(header: Text(NSLocalizedString("settings.section.install", comment: "")).dsSectionHeader()) {
                     Toggle(NSLocalizedString("settings.install.autostart", comment: ""), isOn: $autoStartServer)
-                    NavigationLink(NSLocalizedString("tab.installation", comment: "")) { InstallationView(container: coordinator.container) }
                 }
-                Section(NSLocalizedString("settings.section.security", comment: "")) {
-                    NavigationLink(NSLocalizedString("settings.security.details", comment: "")) {
-                        Text(NSLocalizedString("settings.security.details.text", comment: ""))
-                            .padding()
-                            .navigationTitle(NSLocalizedString("settings.security.details", comment: ""))
-                    }
+                Section(header: Text(NSLocalizedString("settings.section.security", comment: "")).dsSectionHeader()) {
+                    // No passcode/biometric feature exists in this app, so
+                    // this section states the real security facts instead
+                    // of offering a toggle that does nothing.
+                    Text(NSLocalizedString("settings.security.keychain", comment: ""))
+                    Text(NSLocalizedString("settings.security.p12", comment: ""))
                 }
-                Section(NSLocalizedString("settings.section.more", comment: "")) {
+                Section(header: Text(NSLocalizedString("settings.section.more", comment: "")).dsSectionHeader()) {
                     NavigationLink(NSLocalizedString("tab.tweaks", comment: "")) { TweaksView(container: coordinator.container) }
                     NavigationLink(NSLocalizedString("tab.sources", comment: "")) { SourcesView(container: coordinator.container) }
+                    NavigationLink(NSLocalizedString("tab.downloads", comment: "")) { DownloadsView(container: coordinator.container) }
                     NavigationLink(NSLocalizedString("tab.files", comment: "")) { FileManagerView() }
                     NavigationLink(NSLocalizedString("tab.logs", comment: "")) { LogsView() }
                     NavigationLink(NSLocalizedString("tab.about", comment: "")) { AboutView() }
                 }
             }
             .navigationTitle(NSLocalizedString("tab.settings", comment: ""))
+            .dsLargeTitle()
             .onAppear { viewModel.refreshStorage() }
             .alert(NSLocalizedString("settings.storage.clear.confirm", comment: ""), isPresented: $showClearConfirm) {
                 Button(NSLocalizedString("settings.storage.clear", comment: ""), role: .destructive) { viewModel.clearCaches() }
