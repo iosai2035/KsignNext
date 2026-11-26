@@ -190,7 +190,11 @@ public final class AppleIDSignInUseCase: @unchecked Sendable {
                          .anisetteProvision, .network, .tls, .timeout:
                         // The claim/server is the variable: try the next one.
                         continue
-                    case .unavailable, .noPromptPending, .paused, .internalError:
+                    case .unavailable, .noPromptPending, .paused, .internalError,
+                         .notSignedIn, .developerError:
+                        // These two cannot occur during sign-in itself
+                        // (they come from the Phase 2 developer-service
+                        // calls), but the switch must stay exhaustive.
                         throw error
                     }
                 } catch {
