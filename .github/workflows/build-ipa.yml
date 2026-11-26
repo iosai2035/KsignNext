@@ -69,16 +69,34 @@ jobs:
           xcodebuild -resolvePackageDependencies \
             -project KsignNext.xcodeproj -scheme KsignNext
 
-      # The test step hung twice (~50 min each) right after the test
-      # bundles finished building, before any test started: first boot
-      # of CoreSimulator on the Intel runner stalls xcodebuild test.
-      # Boot the simulator explicitly (bounded) so the stall surfaces
-      # here instead, and cap the test step so a hang fails fast.
+      # The test step hung three times right after the test bundles
+      # finished building, before any test started: xcodebuild stalls
+      # launching the iOS 26 simulator on the Intel runner. Boot a
+      # known-good iOS 18.6 simulator explicitly first. macOS has no
+      # `timeout` command, so the wait is bounded in Python instead.
       - name: Boot iPhone simulator
         run: |
-          xcrun simctl list devices available
-          timeout 300 xcrun simctl boot "iPhone 17" || true
-          timeout 300 xcrun simctl bootstatus "iPhone 17" -b || true
+          python3 - <<'EOF'
+          import json, subprocess
+          out = subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "--json"])
+          data = json.loads(out)
+          udid = None
+          for runtime, devices in data["devices"].items():
+              if "18.6" not in runtime:
+                  continue
+              for d in devices:
+                  if d["name"] == "iPhone 16" and d["isAvailable"]:
+                      udid = d["udid"]
+          if not udid:
+              raise SystemExit("No available iPhone 16 (iOS 18.6) simulator found")
+          print("Booting iPhone 16 (iOS 18.6):", udid)
+          subprocess.run(["xcrun", "simctl", "boot", udid], check=False)
+          try:
+              subprocess.run(["xcrun", "simctl", "bootstatus", udid, "-b"], timeout=900, check=False)
+          except subprocess.TimeoutExpired:
+              print("bootstatus timed out after 900s; continuing anyway")
+          print(subprocess.check_output(["xcrun", "simctl", "list", "devices", "booted"]).decode())
+          EOF
 
       - name: Run unit + integration + security tests
         timeout-minutes: 25
@@ -88,7 +106,7 @@ jobs:
           xcodebuild test \
             -project KsignNext.xcodeproj \
             -scheme KsignNext \
-            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.6' \
             -only-testing:KsignNextTests \
             ONLY_ACTIVE_ARCH=YES 2>&1 | tee build/test.log
 
