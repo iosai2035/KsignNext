@@ -38,44 +38,21 @@ jobs:
       # because the generator links RustCore/AppleRefresh.xcframework
       # into the app target only when it exists on disk (and fails
       # hard when REQUIRE_RUST_XCFRAMEWORK=1, set on the regenerate
-      # step below). Cache keyed on Cargo.lock (Swatinem/rust-cache,
-      # the action the design doc recommends); a clean build of this
-      # tree is several minutes (ring compiles C/assembly).
+      # step below). The commands live in Scripts/build_rust_core.sh
+      # — the single source of truth; the workflow never inlines them,
+      # so the two can never drift apart again. Cache keyed on
+      # Cargo.lock (Swatinem/rust-cache); a clean build of this tree
+      # is several minutes (ring compiles C/assembly).
       # NOTE: RustCore/apple_refresh/Cargo.lock must exist in the repo
       # before the first run with this step — the build uses --locked
-      # and fails if the lock is missing or out of date. Generate it
-      # once with `cargo generate-lockfile` in RustCore/apple_refresh
-      # (or let Scripts/build_rust_core.sh do it on its first run)
-      # and commit it.
-      # NOTE 2: three slices. x86_64-apple-ios-sim does NOT exist as
-      # a Rust target — the Intel simulator triple is x86_64-apple-ios
-      # itself (its env is sim). The Intel runner runs the x86_64
-      # simulator, so all three slices are needed.
+      # and fails if the lock is missing or out of date.
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: RustCore/apple_refresh
 
       - name: Build Rust Apple-refresh core (XCFramework)
-        run: |
-          set -o pipefail
-          rustup toolchain install stable
-          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
-          rustc --version; cargo --version
-          cd RustCore/apple_refresh
-          cargo build --release --locked --target aarch64-apple-ios
-          cargo build --release --locked --target aarch64-apple-ios-sim
-          cargo build --release --locked --target x86_64-apple-ios
-          cd ../..
-          xcodebuild -create-xcframework \
-            -library RustCore/apple_refresh/target/aarch64-apple-ios/release/libapple_refresh.a \
-            -headers RustCore/apple_refresh/include \
-            -library RustCore/apple_refresh/target/aarch64-apple-ios-sim/release/libapple_refresh.a \
-            -headers RustCore/apple_refresh/include \
-            -library RustCore/apple_refresh/target/x86_64-apple-ios/release/libapple_refresh.a \
-            -headers RustCore/apple_refresh/include \
-            -output RustCore/AppleRefresh.xcframework
-          ls -R RustCore/AppleRefresh.xcframework
+        run: bash Scripts/build_rust_core.sh
 
       - name: Regenerate Xcode project (verifies file list)
         env:
