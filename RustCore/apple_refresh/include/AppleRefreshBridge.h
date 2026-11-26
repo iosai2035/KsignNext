@@ -101,13 +101,21 @@ int32_t apple_refresh_login(AppleRefreshSession *session,
 
 /// Non-blocking. Returns {"pending": false} or
 /// {"pending": true, "prompt": {"unknown": bool, "sms": bool,
-///   "last_error": null|"…",
+///   "lastError": null|"…",
 ///   "numbers": [{"id": n, "number_with_dial_code": "…",
 ///     "last_two_digits": "…", "push_mode": "…"}],
-///   "selected_number_id": null|n}}.
+///   "selectedNumberId": null|n}}.
+/// NOTE on key casing (verified against isideload 0.5.2
+/// `auth/apple_account.rs`): the top-level prompt fields are
+/// camelCase (`lastError`, `selectedNumberId`) because
+/// `TwoFactorCallbackParams` carries
+/// `#[serde(rename_all = "camelCase")]`; the nested `numbers`
+/// items keep snake_case (`number_with_dial_code`,
+/// `last_two_digits`, `push_mode`, `id`) because `TrustedNumber`
+/// has no rename attribute.
 /// Poll this on a timer (e.g. every 250 ms) while apple_refresh_login
 /// is blocked on another thread. "sms": true means the code goes to
-/// the selected_number_id by SMS; false means a trusted device.
+/// the selectedNumberId by SMS; false means a trusted device.
 int32_t apple_refresh_poll_prompt(AppleRefreshSession *session,
                                   char **out_json);
 
@@ -169,6 +177,97 @@ int32_t apple_refresh_session_info(AppleRefreshSession *session,
 /// For the Settings UI and for the spike variant switch.
 int32_t apple_refresh_sign_in_claims(AppleRefreshSession *session,
                                      char **out_json);
+
+/// ---------------------------------------------------------------------------
+/// Developer services (Phase 2, see src/dev.rs). All BLOCKING network
+/// calls on the same session handle; every one requires a login
+/// (`"not_signed_in"` otherwise). Apple server errors arrive as
+/// {"ok": false, "error": {"code": "developer_error",
+/// "apple_ec": <Apple resultCode>, "apple_em": "…"}}.
+/// Apple codes Swift branches on: 7460 = certificate limit reached,
+/// 35 = already registered / invalid value.
+/// ---------------------------------------------------------------------------
+
+/// Blocking. {"ok": true, "teams": [{"team_id": "…",
+///   "name": null|"…", "type": null|"…", "status": null|"…"}]}.
+int32_t apple_refresh_list_teams(AppleRefreshSession *session,
+                                 char **out_json);
+
+/// Blocking. {"ok": true, "devices": [{"device_id": null|"…",
+///   "device_number": "…" (the UDID), "name": null|"…",
+///   "status": null|"…"}]}.
+int32_t apple_refresh_list_devices(AppleRefreshSession *session,
+                                   const char *team_id,
+                                   char **out_json);
+
+/// Blocking. request_json:
+///   {"team_id": "…", "name": "…", "udid": "…"}
+/// Idempotent: registers the device if it is not already on the
+/// team. {"ok": true, "registered": true, "device": {…}}.
+int32_t apple_refresh_ensure_device(AppleRefreshSession *session,
+                                    const char *request_json,
+                                    char **out_json);
+
+/// Blocking. {"ok": true, "app_ids": [{"app_id_id": "…",
+///   "identifier": "…", "name": "…",
+///   "expiration_date": null|"2026-12-03T13:00:00Z"}],
+///   "max_quantity": null|n, "available_quantity": null|n}.
+int32_t apple_refresh_list_app_ids(AppleRefreshSession *session,
+                                   const char *team_id,
+                                   char **out_json);
+
+/// Blocking. request_json:
+///   {"team_id": "…", "name": "…", "identifier": "…"}
+/// (identifier = bundle ID; the name is normalised by isideload.)
+/// {"ok": true, "app_id": {…same shape as list_app_ids items…}}.
+int32_t apple_refresh_add_app_id(AppleRefreshSession *session,
+                                 const char *request_json,
+                                 char **out_json);
+
+/// Blocking. {"ok": true, "certificates":
+///   [{"certificate_id": null|"…", "name": null|"…",
+///     "serial_number": null|"…", "machine_id": null|"…",
+///     "machine_name": null|"…", "status": null|"…",
+///     "status_code": null|n,
+///     "expiration_date": null|"2027-11-26T00:00:00Z"}]}.
+int32_t apple_refresh_list_certificates(AppleRefreshSession *session,
+                                        const char *team_id,
+                                        char **out_json);
+
+/// Blocking (slow: key generation / CSR / submit / re-list).
+/// request_json:
+///   {"team_id": "…", "machine_name": "…", "email": "…"}
+/// Reuses the certificate matching the stored key and machine name
+/// when one exists, otherwise creates one. {"ok": true,
+///   "reused": bool, "machine_id": "…", "machine_name": "…",
+///   "serial_number": "…", "not_after": null|"2027-…Z",
+///   "p12_base64": "…", "p12_password": "…"}.
+/// The .p12 password is returned once; Swift must store it in the
+/// Keychain immediately and never log it. On the certificate limit
+/// this fails with apple_ec 7460 and Swift offers revocation.
+int32_t apple_refresh_create_certificate(AppleRefreshSession *session,
+                                         const char *request_json,
+                                         char **out_json);
+
+/// Blocking. request_json:
+///   {"team_id": "…", "serial_number": "…"}
+/// {"ok": true, "revoked": true}.
+int32_t apple_refresh_revoke_certificate(AppleRefreshSession *session,
+                                         const char *request_json,
+                                         char **out_json);
+
+/// Blocking. request_json:
+///   {"team_id": "…", "app_id_id": "…"}
+/// {"ok": true, "profile": {
+///   "provisioning_profile_id": "…", "name": "…", "status": "…",
+///   "type": "…", "distribution_method": "…", "uuid": "…",
+///   "date_expire": "2026-12-03T13:00:00Z",
+///   "date_expire_unix": 1796302800, "app_id_id": "…",
+///   "filename": "…", "is_free_provisioning_profile": null|bool,
+///   "encoded_profile_base64": "…" (the raw .mobileprovision)}}.
+int32_t apple_refresh_download_profile(AppleRefreshSession *session,
+                                       const char *request_json,
+                                       char **out_json);
 
 /// Free a JSON string returned in out_json. Safe to call with NULL.
 void apple_refresh_string_free(char *s);

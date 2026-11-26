@@ -26,11 +26,17 @@ impl FileStorage {
     }
 
     fn key_path(&self, key: &str) -> Result<PathBuf, Report> {
+        // The certificate private key lives under "<sha256(email)>/key"
+        // (isideload's convention, see dev.rs). That one sub-path is
+        // allowed; everything else must be a flat file name.
+        let is_cert_key = key.len() == 68
+            && key.ends_with("/key")
+            && key[..64].chars().all(|c| c.is_ascii_hexdigit());
         if key.is_empty()
-            || key.contains('/')
             || key.contains('\\')
             || key.contains("..")
             || key.contains('\0')
+            || (!is_cert_key && key.contains('/'))
         {
             return Err(report!("Invalid storage key"));
         }

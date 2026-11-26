@@ -15,7 +15,7 @@ import UIKit
 ///   address; the other device opens the shown link on the same network.
 ///   This one needs Wi-Fi, and fails with a clear error without it.
 @MainActor
-final class InstallationViewModel: ObservableObject {
+final class InstallationViewModel: ObservableObject, TwoFactorAnswering {
     @Published var isRunning = false
     @Published var installURLString = ""
     @Published var errorMessage: String?
@@ -28,6 +28,15 @@ final class InstallationViewModel: ObservableObject {
     private var lastExportedApp = ""
     @Published var isRefreshing = false
     @Published var refreshStatus = ""
+
+    /// 2FA state for the real refresh's sign-in (same sheet as the
+    /// Settings sign-in, driven by this view model's own gate).
+    @Published var twoFactorPrompt: TwoFactorPrompt?
+    @Published var showing2FA = false
+    @Published var twoFactorCode = ""
+    @Published var codeRequested = false
+    @Published var selectedNumberID: Int?
+    private let twoFactorGate = TwoFactorPromptGate()
 
     /// The pasted device UDID for real refresh (manual fallback — no
     /// automatic lookup exists for a free Apple ID). The sign-in flow
@@ -118,11 +127,14 @@ final class InstallationViewModel: ObservableObject {
         }
     }
 
-    /// Refreshes the selected signed app on this device, without Wi-Fi:
-    /// re-signs it with the same certificate and profile, then
-    /// installs the fresh file over loopback (cellular data is enough).
-    /// The profile must still be valid; an expired profile refuses
-    /// with a typed error (import a fresh profile, then sign again).
+    /// Refreshes the selected signed app on this device, without Wi-Fi.
+    /// When an Apple ID is signed in, this is the REAL refresh: a
+    /// fresh provisioning profile is fetched from Apple, the app is
+    /// re-signed with the fresh certificate + profile, and the new
+    /// file is installed over loopback — so it also fixes an EXPIRED
+    /// profile. When nobody is signed in, it falls back to the legacy
+    /// same-profile re-sign (repairs a broken signature, but the
+    /// profile must still be valid and expiry does not move).
     func refreshSelectedApp() async {
         guard !selectedApp.isEmpty else {
             errorMessage = NSLocalizedString("install.error.noapp", comment: ""); return
@@ -135,26 +147,111 @@ final class InstallationViewModel: ObservableObject {
         isRefreshing = true
         refreshStatus = NSLocalizedString("install.refreshing", comment: "")
         errorMessage = nil
-        defer { isRefreshing = false }
+        defer {
+            isRefreshing = false
+            showing2FA = false
+            twoFactorPrompt = nil
+        }
         do {
-            let plan = try await refreshUseCase.plan(signedIPAURL: ipaURL)
-            let signUseCase = container.makeSignApplicationUseCase()
-            let result = try await signUseCase.execute(plan.request) { [weak self] progressEvent in
-                // The progress closure is @Sendable/nonisolated; hop
-                // back to the main actor to touch @Published state.
-                Task { @MainActor in
-                    self?.refreshStatus = progressEvent.message
+            let signedURL: URL
+            if container.appleIDSessionStore.loadSession() != nil {
+                signedURL = try await realRefreshSignedURL(
+                    ipaURL: ipaURL, container: container, refreshUseCase: refreshUseCase)
+            } else {
+                let plan = try await refreshUseCase.plan(signedIPAURL: ipaURL)
+                let signUseCase = container.makeSignApplicationUseCase()
+                let result = try await signUseCase.execute(plan.request) { [weak self] progressEvent in
+                    // The progress closure is @Sendable/nonisolated; hop
+                    // back to the main actor to touch @Published state.
+                    Task { @MainActor in
+                        self?.refreshStatus = progressEvent.message
+                    }
                 }
+                signedURL = result.signedFileURL
             }
             refreshStatus = NSLocalizedString("install.refresh.installing", comment: "")
-            try await installFile(result.signedFileURL)
+            try await installFile(signedURL)
             refreshStatus = NSLocalizedString("install.refresh.done", comment: "")
             refreshSignedApps()
-            selectedApp = result.signedFileURL.lastPathComponent
+            selectedApp = signedURL.lastPathComponent
             await loadSignatureExpiry()
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// The real refresh for one signed app: fresh profile from
+    /// Apple via `RealRefreshUseCase`, returning the re-signed IPA.
+    /// Throws `.missingUDID` when the device UDID was never pasted
+    /// (the UDID section on this screen is where to paste it).
+    private func realRefreshSignedURL(ipaURL: URL,
+                                      container: DependencyContainer,
+                                      refreshUseCase: RefreshApplicationUseCase) async throws -> URL {
+        guard let udid = udidStore.savedUDID else {
+            throw RealRefreshError.missingUDID
+        }
+        let metadata = try await ipaEngine.readAppMetadata(at: ipaURL)
+        let signInUseCase = container.makeAppleIDSignInUseCase()
+        // 2FA for the silent sign-in inside the refresh, if Apple
+        // asks for one: same gate pattern as the Settings sign-in.
+        codeRequested = false
+        await twoFactorGate.setPromptHandler { [weak self] prompt in
+            self?.twoFactorPrompt = prompt
+            self?.twoFactorCode = ""
+            self?.selectedNumberID = prompt.selectedNumberID ?? prompt.numbers.first?.id
+            self?.showing2FA = true
+        }
+        // Capture the gate (not self) in the @Sendable handler.
+        let gate = twoFactorGate
+        let handler: @Sendable (TwoFactorPrompt) async -> TwoFactorResponse = { prompt in
+            await gate.waitForAnswer(to: prompt)
+        }
+        let realRefresh = RealRefreshUseCase(
+            signInUseCase: signInUseCase,
+            developerService: DeveloperServiceUseCase(signInUseCase: signInUseCase),
+            certificateEngine: container.certificateEngine,
+            certificateRepository: container.certificateRepository,
+            refreshUseCase: refreshUseCase,
+            signUseCase: container.makeSignApplicationUseCase())
+        let result = try await realRefresh.execute(
+            signedIPAURL: ipaURL,
+            bundleID: metadata.bundleIdentifier,
+            appName: metadata.bundleDisplayName ?? metadata.name,
+            udid: udid,
+            deviceName: UIDevice.current.name,
+            twoFactorHandler: handler,
+            onProgress: { [weak self] message in
+                Task { @MainActor in
+                    self?.refreshStatus = message
+                }
+            })
+        return result.signedFileURL
+    }
+
+    // MARK: - 2FA answers (TwoFactorAnswering)
+
+    func submitCode() {
+        let code = twoFactorCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task { await twoFactorGate.answer(.code(code)) }
+    }
+
+    func requestCodeBySMS() {
+        guard let id = selectedNumberID else { return }
+        codeRequested = true
+        Task { await twoFactorGate.answer(.sms(id: id)) }
+    }
+
+    func requestCodeOnDevices() {
+        codeRequested = true
+        Task { await twoFactorGate.answer(.devices) }
+    }
+
+    func resendCode() {
+        Task { await twoFactorGate.answer(.resend) }
+    }
+
+    func cancel2FA() {
+        Task { await twoFactorGate.answer(.abort) }
     }
 
     /// Prepares an install for `destination` and shows its link.
@@ -335,7 +432,11 @@ struct InstallationView: View {
                     if viewModel.canRefresh {
                         Button(NSLocalizedString("install.refresh", comment: "")) { Task { await viewModel.refreshSelectedApp() } }
                             .buttonStyle(.bordered)
-                            .disabled(viewModel.isRefreshing || viewModel.selectedApp.isEmpty || viewModel.signatureExpired)
+                            // An expired profile blocks only the legacy
+                            // same-profile refresh; the real refresh
+                            // (signed in) fetches a fresh profile, so
+                            // it stays enabled when signed in.
+                            .disabled(viewModel.isRefreshing || viewModel.selectedApp.isEmpty || (viewModel.signatureExpired && viewModel.appleIDEmail == nil))
                             .accessibilityIdentifier("install.refresh")
                         if viewModel.isRefreshing {
                             ProgressView(viewModel.refreshStatus)
@@ -397,6 +498,11 @@ struct InstallationView: View {
             }
         }
         .navigationTitle(NSLocalizedString("tab.installation", comment: ""))
+        .sheet(isPresented: $viewModel.showing2FA) {
+            if let prompt = viewModel.twoFactorPrompt {
+                TwoFactorSheet(prompt: prompt, viewModel: viewModel)
+            }
+        }
         .onAppear {
             viewModel.refreshSignedApps()
             Task { await viewModel.autoStartServerIfEnabled() }

@@ -116,18 +116,7 @@ public final class RefreshApplicationUseCase {
     /// gone, `.profileNotFound` / `.profileExpired` / `.profileMismatch`
     /// when the embedded profile cannot be reused.
     public func plan(signedIPAURL: URL) async throws -> RefreshPlan {
-        let fileName = signedIPAURL.lastPathComponent
-        let records = (try? await signedRepository.fetchAll()) ?? []
-        // Match by bundle identifier first: file names can collide or
-        // change, but the bundle id is the app's identity. The file
-        // name is only a fallback for records whose bundle id was
-        // never recorded.
-        let bundleID = try? await ipaEngine.readAppMetadata(at: signedIPAURL).bundleIdentifier
-        let record = (bundleID.flatMap { id in records.first(where: { $0.bundleIdentifier == id }) })
-            ?? records.first(where: { $0.signedFileURL.lastPathComponent == fileName })
-        guard let record else {
-            throw RefreshError.noSigningRecord(fileName)
-        }
+        let (record, bundleID) = try await findRecord(signedIPAURL: signedIPAURL)
         // A profile exists below, so this was not an ad-hoc signing
         // and a certificate must have been used. A nil certificate id
         // here means the record cannot name what to re-sign with, so
@@ -145,13 +134,13 @@ public final class RefreshApplicationUseCase {
         if profile.isExpired {
             throw RefreshError.profileExpired(profile.expirationDate ?? Date.distantPast)
         }
-        guard profile.allows(bundleID: record.bundleIdentifier) else {
-            throw RefreshError.profileMismatch("profile allows \(profile.bundleIdentifier), app is \(record.bundleIdentifier)")
+        guard profile.allows(bundleID: bundleID) else {
+            throw RefreshError.profileMismatch("profile allows \(profile.bundleIdentifier), app is \(bundleID)")
         }
         let configuration = SigningConfiguration(
             certificateID: record.certificateID,
             provisioningProfileID: profile.id,
-            bundleIdentifier: record.bundleIdentifier,
+            bundleIdentifier: bundleID,
             displayName: nil,
             version: record.version.isEmpty ? nil : record.version,
             verifyAfterSigning: false
@@ -166,6 +155,63 @@ public final class RefreshApplicationUseCase {
             profileExpirationDate: profile.expirationDate,
             certificateID: record.certificateID
         )
+    }
+
+    /// Builds the signing request that re-signs `signedIPAURL` with
+    /// a FRESH certificate + provisioning profile (the real refresh,
+    /// Phase 3) instead of the recorded ones. The signed IPA itself
+    /// is the signing input — the engine removes the old signature
+    /// first. Throws the same record/profile errors as `plan`, plus
+    /// `.certificateNotFound` when the fresh certificate is gone.
+    public func planWithFreshProfile(signedIPAURL: URL,
+                                     certificateID: UUID,
+                                     profile: ProvisioningModel) async throws -> RefreshPlan {
+        let (record, bundleID) = try await findRecord(signedIPAURL: signedIPAURL)
+        guard try await certificateRepository.fetch(id: certificateID) != nil else {
+            throw RefreshError.certificateNotFound
+        }
+        if profile.isExpired {
+            throw RefreshError.profileExpired(profile.expirationDate ?? Date.distantPast)
+        }
+        guard profile.allows(bundleID: bundleID) else {
+            throw RefreshError.profileMismatch("profile allows \(profile.bundleIdentifier), app is \(bundleID)")
+        }
+        let configuration = SigningConfiguration(
+            certificateID: certificateID,
+            provisioningProfileID: profile.id,
+            bundleIdentifier: bundleID,
+            displayName: nil,
+            version: record.version.isEmpty ? nil : record.version,
+            verifyAfterSigning: false
+        )
+        let request = SigningRequest(
+            importedIPAID: record.importedIPAID,
+            sourceURL: signedIPAURL,
+            configuration: configuration
+        )
+        return RefreshPlan(
+            request: request,
+            profileExpirationDate: profile.expirationDate,
+            certificateID: certificateID
+        )
+    }
+
+    /// Finds the signing record for `signedIPAURL`, matched by
+    /// bundle identifier first (file names can collide or change,
+    /// but the bundle id is the app's identity) and by file name
+    /// only as a fallback. Returns the record plus the bundle id
+    /// to sign as (the IPA's own id when readable, else the
+    /// record's).
+    private func findRecord(signedIPAURL: URL) async throws -> (record: SigningResult, bundleID: String) {
+        let fileName = signedIPAURL.lastPathComponent
+        let records = (try? await signedRepository.fetchAll()) ?? []
+        let bundleID = try? await ipaEngine.readAppMetadata(at: signedIPAURL).bundleIdentifier
+        let record = (bundleID.flatMap { id in records.first(where: { $0.bundleIdentifier == id }) })
+            ?? records.first(where: { $0.signedFileURL.lastPathComponent == fileName })
+        guard let record else {
+            throw RefreshError.noSigningRecord(fileName)
+        }
+        return (record, bundleID ?? record.bundleIdentifier)
     }
 
     /// Extracts the embedded provisioning profile from a signed IPA.

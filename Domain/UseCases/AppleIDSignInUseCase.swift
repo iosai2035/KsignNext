@@ -20,6 +20,13 @@ import Foundation
 /// sign-in claim first and retried with the other Mac claim —
 /// apptokens must claim a Mac or Apple answers -80046 (design Q4).
 /// The token VALUE never crosses to Swift; only `has_token` is kept.
+///
+/// The signed-in client is RETAINED after a successful sign-in
+/// (Phase 2): the live Rust session on that handle is what the
+/// developer-services calls run on, so closing it here would kill
+/// the real refresh. It is closed on sign-out, on a fresh sign-in,
+/// and by `closeSignedInClient()`. The password is never held here
+/// — it lives in the Keychain through the store.
 public final class AppleIDSignInUseCase: @unchecked Sendable {
 
     public static let xcodeAuthApp = "com.apple.gs.xcode.auth"
@@ -29,6 +36,16 @@ public final class AppleIDSignInUseCase: @unchecked Sendable {
     private let clientFactory: @Sendable () -> any AppleRefreshClientProtocol
     private let lock = NSLock()
     private var currentClient: (any AppleRefreshClientProtocol)?
+    private var _signedInClient: (any AppleRefreshClientProtocol)?
+
+    /// The live client of the current sign-in, if any — the handle
+    /// the developer-services calls (teams, certificates, profiles)
+    /// run on. Nil when signed out or before the first sign-in.
+    public var signedInClient: (any AppleRefreshClientProtocol)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _signedInClient
+    }
 
     public init(store: AppleIDSessionStore = AppleIDSessionStore(),
                 servers: AnisetteServerProvider = AnisetteServerProvider(),
@@ -44,6 +61,15 @@ public final class AppleIDSignInUseCase: @unchecked Sendable {
     public var pauseUntil: Date? { store.pauseUntil() }
     public var savedEmail: String? { store.savedEmail }
 
+    /// The saved Apple ID password from the Keychain, if the user
+    /// signed in before and the password was kept. Nil when the
+    /// user never signed in or the password was cleared (e.g. after
+    /// a rejection). Used by the real refresh to sign in silently.
+    public func savedPassword() -> String? {
+        guard let email = store.savedEmail else { return nil }
+        return store.loadPassword(email: email)
+    }
+
     /// Asks the in-flight login to stop at the next 2FA boundary.
     /// The session is dead after a cancel — the next sign-in creates
     /// a fresh one. Safe to call when nothing is signing in.
@@ -56,6 +82,18 @@ public final class AppleIDSignInUseCase: @unchecked Sendable {
 
     public func signOut() {
         store.clearSession()
+        closeSignedInClient()
+    }
+
+    /// Closes the retained signed-in client (and drops it). The
+    /// Rust session dies with it; the next developer-services call
+    /// needs a fresh sign-in. Safe to call when nothing is signed in.
+    public func closeSignedInClient() {
+        lock.lock()
+        let client = _signedInClient
+        _signedInClient = nil
+        lock.unlock()
+        client?.close()
     }
 
     // MARK: - Sign-in
@@ -73,6 +111,9 @@ public final class AppleIDSignInUseCase: @unchecked Sendable {
         if let until = store.pauseUntil() {
             throw AppleRefreshError.paused(until: until)
         }
+        // A fresh sign-in replaces the retained client, if any —
+        // its Rust session (and DeveloperSession) dies with it.
+        closeSignedInClient()
 
         let claims: [AppleRefreshClaim] = claimOverride.map { [$0] }
             ?? [.sideinstaller, .apparition, .server]
@@ -113,7 +154,13 @@ public final class AppleIDSignInUseCase: @unchecked Sendable {
                         appTokenProven: tokenProven)
                     store.saveSession(session, password: password)
                     store.resetRejections()
-                    client.close()
+                    // Retain the live client: its Rust session is
+                    // what the Phase 2 developer-services calls run
+                    // on. Closed by signOut / the next sign-in /
+                    // closeSignedInClient().
+                    lock.lock()
+                    _signedInClient = client
+                    lock.unlock()
                     clearCurrentClient(client)
                     return session
                 } catch let error as AppleRefreshError {

@@ -51,6 +51,69 @@ final class FakeAppleRefreshClient: AppleRefreshClientProtocol, @unchecked Senda
     func resetAnisette() throws {}
     func cancel() throws { cancelCalls += 1 }
     func close() { closeCalls += 1 }
+
+    // MARK: - Developer services (Phase 2)
+
+    var devCalls: [String] = []
+    var teamsResult: Result<[DeveloperTeam], AppleRefreshError> = .success([])
+    var devicesResult: Result<[DeveloperDevice], AppleRefreshError> = .success([])
+    var ensureDeviceResult: Result<DeveloperDevice, AppleRefreshError> =
+        .failure(.internalError(reason: "Fake has no device."))
+    var appIDsResult: Result<DeveloperAppIDList, AppleRefreshError> =
+        .success(DeveloperAppIDList(appIDs: [], maxQuantity: 10, availableQuantity: 10))
+    var addAppIDResult: Result<DeveloperAppID, AppleRefreshError> =
+        .failure(.internalError(reason: "Fake has no App ID."))
+    var certificatesResult: Result<[DevelopmentCertificate], AppleRefreshError> = .success([])
+    var createCertificateResult: Result<CreatedCertificate, AppleRefreshError> =
+        .failure(.internalError(reason: "Fake has no certificate."))
+    var revokeCertificateError: AppleRefreshError?
+    var profileResult: Result<DeveloperProfile, AppleRefreshError> =
+        .failure(.internalError(reason: "Fake has no profile."))
+
+    func listTeams() async throws -> [DeveloperTeam] {
+        devCalls.append("listTeams")
+        return try teamsResult.get()
+    }
+
+    func listDevices(teamID: String) async throws -> [DeveloperDevice] {
+        devCalls.append("listDevices")
+        return try devicesResult.get()
+    }
+
+    func ensureDevice(teamID: String, name: String, udid: String) async throws -> DeveloperDevice {
+        devCalls.append("ensureDevice")
+        return try ensureDeviceResult.get()
+    }
+
+    func listAppIDs(teamID: String) async throws -> DeveloperAppIDList {
+        devCalls.append("listAppIDs")
+        return try appIDsResult.get()
+    }
+
+    func addAppID(teamID: String, name: String, identifier: String) async throws -> DeveloperAppID {
+        devCalls.append("addAppID")
+        return try addAppIDResult.get()
+    }
+
+    func listCertificates(teamID: String) async throws -> [DevelopmentCertificate] {
+        devCalls.append("listCertificates")
+        return try certificatesResult.get()
+    }
+
+    func createCertificate(teamID: String, machineName: String, email: String) async throws -> CreatedCertificate {
+        devCalls.append("createCertificate")
+        return try createCertificateResult.get()
+    }
+
+    func revokeCertificate(teamID: String, serialNumber: String) async throws {
+        devCalls.append("revokeCertificate")
+        if let error = revokeCertificateError { throw error }
+    }
+
+    func downloadProfile(teamID: String, appID: String) async throws -> DeveloperProfile {
+        devCalls.append("downloadProfile")
+        return try profileResult.get()
+    }
 }
 
 final class AppleIDSignInUseCaseTests: XCTestCase {
@@ -92,6 +155,12 @@ final class AppleIDSignInUseCaseTests: XCTestCase {
         XCTAssertEqual(store.loadSession()?.email, "test@example.com")
         XCTAssertEqual(store.loadPassword(email: "test@example.com"), "pw")
         XCTAssertEqual(store.rejectionCount, 0)
+        // The live client is retained for the Phase 2 developer
+        // services (closing it here would kill the real refresh).
+        XCTAssertNotNil(useCase.signedInClient)
+        useCase.signOut()
+        XCTAssertNil(useCase.signedInClient)
+        XCTAssertNil(useCase.currentSession)
     }
 
     func testFallsBackToApparitionOn22410() async throws {

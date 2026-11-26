@@ -322,3 +322,17 @@
 "appleid.2fa.code.placeholder" = "123456";
 "appleid.2fa.submit" = "Submit code";
 "appleid.2fa.resend" = "Resend code";
+"realrefresh.step.signin" = "Signing in with your Apple ID…";
+"realrefresh.step.team" = "Finding your developer team…";
+"realrefresh.step.device" = "Registering this device with Apple…";
+"realrefresh.step.certificate" = "Getting your development certificate…";
+"realrefresh.step.appid" = "Registering the App ID…";
+"realrefresh.step.profile" = "Downloading a fresh provisioning profile…";
+"realrefresh.step.signing" = "Re-signing with the fresh profile…";
+"certs.dev.title" = "Development certificates (Apple ID)";
+"certs.dev.signin" = "Sign in with your Apple ID to see the development certificates on your account.";
+"certs.dev.unnamed" = "Development certificate";
+"certs.dev.create" = "Create on-device certificate";
+"certs.dev.creating" = "Creating certificate…";
+"certs.local.title" = "Stored certificates";
+"common.revoke" = "Revoke";

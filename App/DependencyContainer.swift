@@ -153,8 +153,16 @@ public final class DependencyContainer {
     public lazy var appleIDSessionStore: AppleIDSessionStore =
         AppleIDSessionStore(keychain: keychain)
 
-    public func makeAppleIDSignInUseCase() -> AppleIDSignInUseCase {
+    /// ONE shared sign-in use case for the whole app. It owns the
+    /// retained signed-in client (the live Rust session the
+    /// developer-services calls run on), so the Settings sign-in
+    /// and the Installation real refresh must share this instance
+    /// — a fresh use case per call would drop the live client.
+    public lazy var appleIDSignInUseCase: AppleIDSignInUseCase =
         AppleIDSignInUseCase(store: appleIDSessionStore)
+
+    public func makeAppleIDSignInUseCase() -> AppleIDSignInUseCase {
+        appleIDSignInUseCase
     }
 
     @MainActor

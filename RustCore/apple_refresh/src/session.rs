@@ -75,6 +75,8 @@ pub struct SessionInner {
     pub prompt: Mutex<Option<String>>,
     pub responder: Mutex<Option<oneshot::Sender<TwoFactorCallbackResponse>>>,
     pub cancelled: AtomicBool,
+    /// Cached DeveloperSession (Phase 2) + when it was built.
+    pub dev_session: Mutex<Option<crate::dev::DevSessionEntry>>,
 }
 
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -265,6 +267,7 @@ impl SessionInner {
             prompt: Mutex::new(None),
             responder: Mutex::new(None),
             cancelled: AtomicBool::new(false),
+            dev_session: Mutex::new(None),
         });
         let success = json!({
             "ok": true,

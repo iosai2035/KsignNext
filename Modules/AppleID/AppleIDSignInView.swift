@@ -40,8 +40,24 @@ enum AppleIDClaimChoice: String, CaseIterable {
     }
 }
 
+/// What a view model must provide for `TwoFactorSheet`: the
+/// code field, the number picker state, and the answers. Both the
+/// Settings sign-in (`AppleIDSignInViewModel`) and the real
+/// refresh (`InstallationViewModel`) answer through their own
+/// `TwoFactorPromptGate`, so the sheet stays shared.
+protocol TwoFactorAnswering: AnyObject, ObservableObject {
+    var twoFactorCode: String { get set }
+    var codeRequested: Bool { get set }
+    var selectedNumberID: Int? { get set }
+    func submitCode()
+    func requestCodeBySMS()
+    func requestCodeOnDevices()
+    func resendCode()
+    func cancel2FA()
+}
+
 @MainActor
-final class AppleIDSignInViewModel: ObservableObject {
+final class AppleIDSignInViewModel: ObservableObject, TwoFactorAnswering {
     @Published var email = ""
     @Published var password = ""
     @Published var session: AppleIDSession?
@@ -290,7 +306,7 @@ struct AppleIDSignInView: View {
 
 struct TwoFactorSheet: View {
     let prompt: TwoFactorPrompt
-    @ObservedObject var viewModel: AppleIDSignInViewModel
+    @ObservedObject var viewModel: any TwoFactorAnswering
 
     var body: some View {
         NavigationStack {
@@ -304,7 +320,8 @@ struct TwoFactorSheet: View {
                 if !viewModel.codeRequested, !prompt.numbers.isEmpty {
                     Section(NSLocalizedString("appleid.2fa.choose", comment: "")) {
                         Picker(NSLocalizedString("appleid.2fa.number", comment: ""),
-                               selection: $viewModel.selectedNumberID) {
+                               selection: Binding(get: { viewModel.selectedNumberID },
+                                                  set: { viewModel.selectedNumberID = $0 })) {
                             ForEach(prompt.numbers, id: \.id) { number in
                                 Text(number.numberWithDialCode).tag(Optional(number.id))
                             }
@@ -328,7 +345,8 @@ struct TwoFactorSheet: View {
                 // and nowhere to type it.
                 Section(NSLocalizedString("appleid.2fa.code", comment: "")) {
                     TextField(NSLocalizedString("appleid.2fa.code.placeholder", comment: ""),
-                              text: $viewModel.twoFactorCode)
+                              text: Binding(get: { viewModel.twoFactorCode },
+                                            set: { viewModel.twoFactorCode = $0 }))
                         .keyboardType(.numberPad)
                         .accessibilityIdentifier("appleid.2fa.code")
                     Button(NSLocalizedString("appleid.2fa.submit", comment: "")) {

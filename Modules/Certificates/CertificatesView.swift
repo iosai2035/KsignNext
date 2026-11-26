@@ -18,6 +18,78 @@ final class CertificatesViewModel: ObservableObject {
     @Published var pendingP12URL: URL?
     @Published var p12Password = "" // Held in memory only; never logged, never written to disk.
 
+    /// Development certificates on the Apple account (Phase 2),
+    /// listed live from Apple's developer service when signed in.
+    @Published var devCertificates: [DevelopmentCertificate] = []
+    @Published var devCertificatesLoading = false
+    @Published var isCreatingDevCertificate = false
+
+    /// True when an Apple ID session exists (the live client is
+    /// what the developer-services calls run on).
+    var isSignedIn: Bool { container.appleIDSessionStore.loadSession() != nil }
+
+    private func developerService() -> DeveloperServiceUseCase {
+        DeveloperServiceUseCase(signInUseCase: container.makeAppleIDSignInUseCase())
+    }
+
+    /// Lists the account's iOS development certificates from Apple.
+    /// A live sign-in is required; without one the list is empty.
+    func loadDevCertificates() async {
+        guard isSignedIn else { devCertificates = []; return }
+        devCertificatesLoading = true
+        defer { devCertificatesLoading = false }
+        do {
+            let service = developerService()
+            guard let team = try await service.firstTeam() else { devCertificates = []; return }
+            devCertificates = try await service.listCertificates(teamID: team.teamID)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Creates (or reuses) the on-device development certificate
+    /// and imports its .p12 into the Certificates store, so it can
+    /// sign apps. On the certificate limit (7460) this fails with
+    /// the limit message — revoke an old certificate below first.
+    func createDevCertificate() async {
+        guard isSignedIn else { return }
+        isCreatingDevCertificate = true
+        defer { isCreatingDevCertificate = false }
+        do {
+            let service = developerService()
+            guard let team = try await service.firstTeam() else { return }
+            guard let email = container.appleIDSessionStore.loadSession()?.email else { return }
+            let created = try await service.createCertificate(teamID: team.teamID, email: email)
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("KsignNext-Development-\(UUID().uuidString).p12")
+            defer { try? FileManager.default.removeItem(at: tempURL) }
+            try created.p12Data.write(to: tempURL, options: [.atomic])
+            let model = try await certificateEngine.importP12(at: tempURL, password: created.p12Password)
+            try await certificateRepository.save(model)
+            refresh()
+            await loadDevCertificates()
+        } catch {
+            // AppleRefreshError already carries the plain 7460
+            // limit message ("revoke an old certificate…").
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Revokes one development certificate on the account (by
+    /// serial number). The matching local .p12, if any, stays —
+    /// delete it from the list above when it is no longer needed.
+    func revokeDevCertificate(_ cert: DevelopmentCertificate) async {
+        guard let serial = cert.serialNumber, isSignedIn else { return }
+        do {
+            let service = developerService()
+            guard let team = try await service.firstTeam() else { return }
+            try await service.revokeCertificate(teamID: team.teamID, serialNumber: serial)
+            await loadDevCertificates()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     private let container: DependencyContainer
     private let certificateEngine: CertificateEngineProtocol
     private let certificateRepository: CertificateRepository
@@ -135,10 +207,13 @@ struct CertificatesView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if viewModel.certificates.isEmpty {
+                if viewModel.certificates.isEmpty && !viewModel.isSignedIn {
                     emptyState
                 } else {
-                    certificatesList
+                    List {
+                        devCertificatesSection
+                        localCertificatesSection
+                    }
                 }
             }
             .navigationTitle(NSLocalizedString("tab.certificates", comment: ""))
@@ -166,7 +241,10 @@ struct CertificatesView: View {
                 }
             }
             .sheet(isPresented: $showPasswordSheet) { passwordSheet }
-            .onAppear { viewModel.refresh() }
+            .onAppear {
+                viewModel.refresh()
+                Task { await viewModel.loadDevCertificates() }
+            }
             .alert(NSLocalizedString("common.delete.confirm", comment: ""), isPresented: Binding(get: { certToDelete != nil }, set: { if !$0 { certToDelete = nil } })) {
                 Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) {
                     if let c = certToDelete { viewModel.delete(c) }
@@ -187,6 +265,82 @@ struct CertificatesView: View {
 
     // Branches extracted so the type checker does not have to infer the
     // whole body as one expression (it timed out on the combined form).
+
+    /// The account's development certificates from Apple (Phase 2).
+    /// Shown only when signed in; creating one here is what the
+    /// real refresh does automatically on first refresh.
+    private var devCertificatesSection: some View {
+        Section(NSLocalizedString("certs.dev.title", comment: "")) {
+            if !viewModel.isSignedIn {
+                Text(NSLocalizedString("certs.dev.signin", comment: ""))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if viewModel.devCertificatesLoading {
+                ProgressView()
+            } else {
+                ForEach(viewModel.devCertificates, id: \.serialNumber) { cert in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(cert.name ?? NSLocalizedString("certs.dev.unnamed", comment: ""))
+                                .font(.subheadline)
+                            if let machine = cert.machineName {
+                                Text(machine).font(.caption).foregroundStyle(.secondary)
+                            }
+                            if let serial = cert.serialNumber {
+                                Text(serial).font(.caption.monospaced()).foregroundStyle(.secondary)
+                            }
+                            if let expiry = cert.expirationDate {
+                                Text(expiry, style: .date).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Button(NSLocalizedString("common.revoke", comment: ""), role: .destructive) {
+                            Task { await viewModel.revokeDevCertificate(cert) }
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("certs.dev.revoke")
+                    }
+                }
+                Button(NSLocalizedString("certs.dev.create", comment: "")) {
+                    Task { await viewModel.createDevCertificate() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(viewModel.isCreatingDevCertificate)
+                .accessibilityIdentifier("certs.dev.create")
+                if viewModel.isCreatingDevCertificate {
+                    ProgressView(NSLocalizedString("certs.dev.creating", comment: ""))
+                }
+            }
+        }
+    }
+
+    /// The locally stored certificates, as rows in the same List
+    /// as the dev section (never a nested List).
+    private var localCertificatesSection: some View {
+        Section(NSLocalizedString("certs.local.title", comment: "")) {
+            if viewModel.certificates.isEmpty {
+                Text(NSLocalizedString("certs.empty", comment: ""))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(viewModel.certificates) { cert in
+                    Button { selectedCert = cert } label: {
+                        HStack {
+                            Image(systemName: cert.kind == "P12" ? "key.fill" : "doc.badge.gearshape")
+                            VStack(alignment: .leading) {
+                                Text(cert.name).lineLimit(1)
+                                Text(cert.kind).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .accessibilityIdentifier("certs.row.\(cert.name)")
+                    .swipeActions {
+                        Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) { certToDelete = cert }
+                    }
+                }
+            }
+        }
+    }
+
     private var emptyState: some View {
         EmptyStateView(
             NSLocalizedString("certs.empty", comment: ""),
@@ -196,24 +350,6 @@ struct CertificatesView: View {
             Button(NSLocalizedString("certs.import.p12", comment: "")) { viewModel.showP12Importer = true }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("certs.import.empty")
-        }
-    }
-
-    private var certificatesList: some View {
-        List(viewModel.certificates) { cert in
-            Button { selectedCert = cert } label: {
-                HStack {
-                    Image(systemName: cert.kind == "P12" ? "key.fill" : "doc.badge.gearshape")
-                    VStack(alignment: .leading) {
-                        Text(cert.name).lineLimit(1)
-                        Text(cert.kind).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .accessibilityIdentifier("certs.row.\(cert.name)")
-            .swipeActions {
-                Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) { certToDelete = cert }
-            }
         }
     }
 

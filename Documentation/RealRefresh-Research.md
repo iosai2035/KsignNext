@@ -611,3 +611,40 @@ The "same principle as loopback install" premise does not transfer.
   from the App Store (as SideStore/AltLoad use it) if the Wi-Fi
   constraint is ever relaxed — it is not bundled and not required by
   the paste fallback.
+
+## Implementation status — 2026-11-26 (Phase 2 + 3 built)
+
+- Rust core (`RustCore/apple_refresh/src/dev.rs`, v0.2.0): 9 new FFI
+  functions on the same session handle — listTeams, listDevices,
+  ensureDevice, listAppIDs, addAppID, listCertificates,
+  createCertificate (isideload `CertificateIdentity::retrieve` +
+  p12 packaging, private key file-backed under
+  `<storage_dir>/certs/<sha256(email)>/key`, password random per
+  p12), revokeCertificate, downloadProfile (raw .mobileprovision,
+  base64). DeveloperSession cached 30 min, rebuilt via
+  `from_account`; token never leaves Rust. `DeveloperError` now
+  maps to code `developer_error` with `apple_ec` (was `internal`).
+  8 Rust unit tests pass; clippy clean (also fixed the 1.100
+  `not_unsafe_ptr_arg_deref` deny on all extern fns by marking
+  them `unsafe extern "C" fn`, and the `Nonce::from_slice`
+  deprecation in apptokens.rs).
+- Swift: `AppleRefreshClientProtocol` + client extended with the 9
+  dev calls; new `DeveloperServiceModels` (team/device/App ID/
+  cert/created-cert/profile); `DeveloperServiceUseCase`;
+  `RealRefreshUseCase` (sign-in silent with saved creds → team →
+  ensure device → cert reuse/create + importP12 + repository save
+  → App ID reuse/add → fresh profile download + import →
+  `planWithFreshProfile` → sign → install). The sign-in use case
+  now RETAINS the live client after success (previously closed);
+  the container shares ONE sign-in use case instance so Settings
+  sign-in and Installation refresh use the same live handle.
+  `RefreshApplicationUseCase.planWithFreshProfile` added
+  (record lookup factored into `findRecord`).
+- UI: Installation Refresh now runs the REAL refresh when signed
+  in (works on an expired profile — the button stays enabled when
+  signed in) and falls back to the legacy same-profile re-sign
+  when not signed in; 2FA sheet shared via `TwoFactorAnswering`
+  protocol. Certificates tab lists the account's dev certificates
+  with create/revoke. 14 new EN+AR strings (337 = 337).
+- Live proof still pending on device: full login + app-token proof
+  (IPA #6, 2FA fix), then a real refresh end to end.

@@ -23,6 +23,8 @@ public enum AppleRefreshError: LocalizedError, Equatable {
     case cancelled
     case noPromptPending
     case paused(until: Date)
+    case notSignedIn
+    case developerError(appleEC: Int?, appleEM: String?, message: String)
     case internalError(reason: String)
 
     public var errorDescription: String? {
@@ -65,6 +67,13 @@ public enum AppleRefreshError: LocalizedError, Equatable {
             formatter.dateStyle = .none
             formatter.timeStyle = .short
             return "Sign-in is paused until \(formatter.string(from: until)) after repeated rejections."
+        case .notSignedIn:
+            return "Sign in with an Apple ID first."
+        case .developerError(let ec, _, let message):
+            if ec == 7460 {
+                return "Apple refused: the maximum number of development certificates for this account has been reached (7460). Revoke an old certificate and try again."
+            }
+            return "Apple's developer service refused the request\(ec.map { " (\($0))" } ?? ""): \(message)"
         case .internalError(let reason):
             return "Apple sign-in failed: \(reason)"
         }
@@ -95,6 +104,8 @@ public enum AppleRefreshError: LocalizedError, Equatable {
         case "two_factor_aborted": return .twoFactorAborted
         case "cancelled": return .cancelled
         case "no_prompt_pending": return .noPromptPending
+        case "not_signed_in": return .notSignedIn
+        case "developer_error": return .developerError(appleEC: ec, appleEM: em, message: message)
         default: return .internalError(reason: message)
         }
     }
@@ -343,6 +354,18 @@ public protocol AppleRefreshClientProtocol: AnyObject, Sendable {
     func resetAnisette() throws
     func cancel() throws
     func close()
+
+    // MARK: - Developer services (Phase 2, same session handle)
+
+    func listTeams() async throws -> [DeveloperTeam]
+    func listDevices(teamID: String) async throws -> [DeveloperDevice]
+    func ensureDevice(teamID: String, name: String, udid: String) async throws -> DeveloperDevice
+    func listAppIDs(teamID: String) async throws -> DeveloperAppIDList
+    func addAppID(teamID: String, name: String, identifier: String) async throws -> DeveloperAppID
+    func listCertificates(teamID: String) async throws -> [DevelopmentCertificate]
+    func createCertificate(teamID: String, machineName: String, email: String) async throws -> CreatedCertificate
+    func revokeCertificate(teamID: String, serialNumber: String) async throws
+    func downloadProfile(teamID: String, appID: String) async throws -> DeveloperProfile
 }
 
 // MARK: - Client
@@ -545,6 +568,131 @@ public final class AppleRefreshClient: AppleRefreshClientProtocol, @unchecked Se
         return AppleRefreshSessionInfo.from(json: json)
     }
 
+    // MARK: - Developer services (Phase 2, same session handle)
+
+    /// All of these are BLOCKING network calls on the Rust side, so
+    /// each runs on a detached task like `getAppToken`. They all
+    /// require a login on this handle (`not_signed_in` otherwise).
+
+    public func listTeams() async throws -> [DeveloperTeam] {
+        try await runBlocking { [self] in
+            let session = try self.rawSession()
+            let json = try Self.callJSON(step: "list_teams") { outJSON in
+                apple_refresh_list_teams(session, outJSON)
+            }
+            return (json["teams"] as? [[String: Any]] ?? []).map(DeveloperTeam.from(json:))
+        }
+    }
+
+    public func listDevices(teamID: String) async throws -> [DeveloperDevice] {
+        try await runBlocking { [self] in
+            let session = try self.rawSession()
+            let json = try Self.callJSON(step: "list_devices") { outJSON in
+                teamID.withCString { cTeam in
+                    apple_refresh_list_devices(session, cTeam, outJSON)
+                }
+            }
+            return (json["devices"] as? [[String: Any]] ?? []).map(DeveloperDevice.from(json:))
+        }
+    }
+
+    public func ensureDevice(teamID: String, name: String, udid: String) async throws -> DeveloperDevice {
+        let request = try Self.requestJSONString(["team_id": teamID, "name": name, "udid": udid])
+        return try await runBlocking { [self] in
+            let session = try self.rawSession()
+            let json = try Self.callJSON(step: "ensure_device") { outJSON in
+                request.withCString { cRequest in
+                    apple_refresh_ensure_device(session, cRequest, outJSON)
+                }
+            }
+            guard let device = json["device"] as? [String: Any] else {
+                throw AppleRefreshError.internalError(reason: "Apple returned no device for ensure_device.")
+            }
+            return DeveloperDevice.from(json: device)
+        }
+    }
+
+    public func listAppIDs(teamID: String) async throws -> DeveloperAppIDList {
+        try await runBlocking { [self] in
+            let session = try self.rawSession()
+            let json = try Self.callJSON(step: "list_app_ids") { outJSON in
+                teamID.withCString { cTeam in
+                    apple_refresh_list_app_ids(session, cTeam, outJSON)
+                }
+            }
+            return DeveloperAppIDList.from(json: json)
+        }
+    }
+
+    public func addAppID(teamID: String, name: String, identifier: String) async throws -> DeveloperAppID {
+        let request = try Self.requestJSONString(["team_id": teamID, "name": name, "identifier": identifier])
+        return try await runBlocking { [self] in
+            let session = try self.rawSession()
+            let json = try Self.callJSON(step: "add_app_id") { outJSON in
+                request.withCString { cRequest in
+                    apple_refresh_add_app_id(session, cRequest, outJSON)
+                }
+            }
+            guard let appID = json["app_id"] as? [String: Any] else {
+                throw AppleRefreshError.internalError(reason: "Apple returned no App ID for add_app_id.")
+            }
+            return DeveloperAppID.from(json: appID)
+        }
+    }
+
+    public func listCertificates(teamID: String) async throws -> [DevelopmentCertificate] {
+        try await runBlocking { [self] in
+            let session = try self.rawSession()
+            let json = try Self.callJSON(step: "list_certificates") { outJSON in
+                teamID.withCString { cTeam in
+                    apple_refresh_list_certificates(session, cTeam, outJSON)
+                }
+            }
+            return (json["certificates"] as? [[String: Any]] ?? []).map(DevelopmentCertificate.from(json:))
+        }
+    }
+
+    public func createCertificate(teamID: String, machineName: String, email: String) async throws -> CreatedCertificate {
+        let request = try Self.requestJSONString(["team_id": teamID, "machine_name": machineName, "email": email])
+        return try await runBlocking { [self] in
+            let session = try self.rawSession()
+            let json = try Self.callJSON(step: "create_certificate") { outJSON in
+                request.withCString { cRequest in
+                    apple_refresh_create_certificate(session, cRequest, outJSON)
+                }
+            }
+            return try CreatedCertificate.from(json: json)
+        }
+    }
+
+    public func revokeCertificate(teamID: String, serialNumber: String) async throws {
+        let request = try Self.requestJSONString(["team_id": teamID, "serial_number": serialNumber])
+        try await runBlocking { [self] in
+            let session = try self.rawSession()
+            _ = try Self.callJSON(step: "revoke_certificate") { outJSON in
+                request.withCString { cRequest in
+                    apple_refresh_revoke_certificate(session, cRequest, outJSON)
+                }
+            }
+        }
+    }
+
+    public func downloadProfile(teamID: String, appID: String) async throws -> DeveloperProfile {
+        let request = try Self.requestJSONString(["team_id": teamID, "app_id_id": appID])
+        return try await runBlocking { [self] in
+            let session = try self.rawSession()
+            let json = try Self.callJSON(step: "download_profile") { outJSON in
+                request.withCString { cRequest in
+                    apple_refresh_download_profile(session, cRequest, outJSON)
+                }
+            }
+            guard let profile = json["profile"] as? [String: Any] else {
+                throw AppleRefreshError.internalError(reason: "Apple returned no profile for download_profile.")
+            }
+            return try DeveloperProfile.from(json: profile)
+        }
+    }
+
     // MARK: - Private helpers
 
     private func rawSession() throws -> OpaquePointer {
@@ -575,6 +723,17 @@ public final class AppleRefreshClient: AppleRefreshClientProtocol, @unchecked Se
         apple_refresh_session_free(handle)
         self.handle = nil
         closed = true
+    }
+
+    /// Encodes a small request object for the `request_json`
+    /// FFI arguments (dev calls). Throws rather than producing
+    /// an empty string — Rust would reject it as invalid anyway.
+    private static func requestJSONString(_ object: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: object)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw AppleRefreshError.internalError(reason: "Could not encode the request.")
+        }
+        return text
     }
 
     /// Runs one FFI call, decodes the `{"ok": …}` envelope, and

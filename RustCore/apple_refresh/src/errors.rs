@@ -91,7 +91,7 @@ pub fn from_report(step: &str, report: &rootcause::Report) -> Value {
                 }
                 isideload::SideloadError::DeveloperError(code, message) => error_value(
                     step,
-                    "internal",
+                    "developer_error",
                     &first_line(&text),
                     Some(*code),
                     Some(message.clone()),

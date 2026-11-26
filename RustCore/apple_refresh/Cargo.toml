@@ -1,6 +1,6 @@
 [package]
 name = "apple_refresh"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Ksign Next Apple ID sign-in core (isideload FFI)"
 license = "MIT"

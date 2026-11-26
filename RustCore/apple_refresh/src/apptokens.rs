@@ -101,10 +101,11 @@ fn decrypt_gcm(data: &[u8], key: &[u8]) -> Result<Vec<u8>, Report> {
     }
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|e| report!("Failed to create app-token cipher: {e}"))?;
-    let nonce = Nonce::from_slice(&data[3..19]);
+    let nonce = Nonce::try_from(&data[3..19])
+        .map_err(|_| report!("App-token nonce is not 16 bytes"))?;
     cipher
         .decrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: &data[19..],
                 aad: b"XYZ",

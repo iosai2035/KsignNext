@@ -322,3 +322,17 @@
 "appleid.2fa.code.placeholder" = "123456";
 "appleid.2fa.submit" = "إرسال الرمز";
 "appleid.2fa.resend" = "إعادة إرسال الرمز";
+"realrefresh.step.signin" = "جارٍ تسجيل الدخول بحساب آبل…";
+"realrefresh.step.team" = "جارٍ العثور على فريق المطوّر…";
+"realrefresh.step.device" = "جارٍ تسجيل هذا الجهاز لدى آبل…";
+"realrefresh.step.certificate" = "جارٍ الحصول على شهادة التطوير…";
+"realrefresh.step.appid" = "جارٍ تسجيل معرّف التطبيق…";
+"realrefresh.step.profile" = "جارٍ تنزيل ملف تعريف جديد…";
+"realrefresh.step.signing" = "جارٍ إعادة التوقيع بالملف الجديد…";
+"certs.dev.title" = "شهادات التطوير (حساب آبل)";
+"certs.dev.signin" = "سجّل الدخول بحساب آبل لعرض شهادات التطوير على حسابك.";
+"certs.dev.unnamed" = "شهادة تطوير";
+"certs.dev.create" = "إنشاء شهادة على الجهاز";
+"certs.dev.creating" = "جارٍ إنشاء الشهادة…";
+"certs.local.title" = "الشهادات المحفوظة";
+"common.revoke" = "إلغاء";
