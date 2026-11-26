@@ -17,7 +17,9 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15-intel
+    # arm64 runner: Intel runners stall booting the simulator (xcodebuild's
+    # install worker times out after 60s, then hangs) in every run.
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
