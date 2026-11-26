@@ -69,7 +69,19 @@ jobs:
           xcodebuild -resolvePackageDependencies \
             -project KsignNext.xcodeproj -scheme KsignNext
 
+      # The test step hung twice (~50 min each) right after the test
+      # bundles finished building, before any test started: first boot
+      # of CoreSimulator on the Intel runner stalls xcodebuild test.
+      # Boot the simulator explicitly (bounded) so the stall surfaces
+      # here instead, and cap the test step so a hang fails fast.
+      - name: Boot iPhone simulator
+        run: |
+          xcrun simctl list devices available
+          timeout 300 xcrun simctl boot "iPhone 17" || true
+          timeout 300 xcrun simctl bootstatus "iPhone 17" -b || true
+
       - name: Run unit + integration + security tests
+        timeout-minutes: 25
         run: |
           set -o pipefail
           mkdir -p build
