@@ -283,3 +283,13 @@
 "install.expiry.expired" = "Signature expired — refresh now";
 "install.expiry.unknown" = "Signature expiry unknown";
 "install.refresh.error.nocontainer" = "Refresh is not available in this context.";
+"udid.section" = "Device UDID";
+"udid.field" = "UDID";
+"udid.placeholder" = "40-character UDID";
+"udid.save" = "Save UDID";
+"udid.clear" = "Remove";
+"udid.saved" = "Saved UDID";
+"udid.empty" = "No UDID saved yet.";
+"udid.invalid" = "Enter the 40-character UDID (letters A–F and digits only).";
+"udid.help" = "Apple needs your device's UDID to register it for a fresh profile. Find it in Finder (click the serial number under your device name), in iTunes, in 3uTools, or at udid.io.";
+"udid.auto.note" = "The app cannot read the UDID itself: iOS has no public API for it, and a free Apple ID cannot carry the VPN entitlement an automatic lookup would need.";

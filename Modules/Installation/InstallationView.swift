@@ -25,6 +25,11 @@ final class InstallationViewModel: ObservableObject {
     @Published var isRefreshing = false
     @Published var refreshStatus = ""
 
+    /// The pasted device UDID for real refresh (manual fallback — no
+    /// automatic lookup exists for a free Apple ID). The sign-in flow
+    /// reads `udidStore.savedUDID` when registering this device.
+    let udidStore = DeviceUDIDStore()
+
     private let container: DependencyContainer?
     private let installationEngine: InstallationEngine
     private let ipaEngine: IPAEngineProtocol
@@ -306,6 +311,7 @@ struct InstallationView: View {
                     }
                 }
             }
+            DeviceUDIDSection(store: viewModel.udidStore)
             Section(NSLocalizedString("install.section.sidestore", comment: "")) {
                 if let url = viewModel.sideStoreExportURL() {
                     ShareLink(item: url, preview: SharePreview(viewModel.selectedApp)) {

@@ -71,4 +71,24 @@ public enum Validators {
         return value.allSatisfy { $0.isLetter || $0.isNumber }
             && value == value.uppercased()
     }
+
+    // MARK: - Device UDID
+
+    /// Normalizes a pasted UDID: strips all whitespace and uppercases.
+    /// Returns nil unless the result is exactly 40 hex characters
+    /// (the UDID format Finder / iTunes / 3uTools / udid.io show).
+    /// Uppercase and lowercase input are both accepted.
+    public static func normalizedDeviceUDID(_ value: String) -> String? {
+        let normalized = value.components(separatedBy: .whitespacesAndNewlines)
+            .joined().uppercased()
+        guard normalized.count == 40,
+              normalized.allSatisfy({ $0.isHexDigit }) else { return nil }
+        return normalized
+    }
+
+    /// `true` when `value` is a 40-character hex UDID (case-insensitive,
+    /// surrounding / embedded whitespace ignored).
+    public static func isValidDeviceUDID(_ value: String) -> Bool {
+        normalizedDeviceUDID(value) != nil
+    }
 }

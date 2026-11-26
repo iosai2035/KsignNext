@@ -228,6 +228,7 @@ public enum StorageError: LocalizedError, Equatable {
 
 public enum ValidationError: LocalizedError, Equatable {
     case invalidBundleIdentifier(String)
+    case invalidDeviceUDID(String)
     case invalidVersion(String)
     case invalidURL(String)
     case invalidFileExtension(String)
@@ -237,6 +238,7 @@ public enum ValidationError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .invalidBundleIdentifier(let value): return "“\(value)” is not a valid bundle identifier."
+        case .invalidDeviceUDID(let value): return "“\(value)” is not a valid UDID. Enter the 40-character UDID (letters A–F and digits only)."
         case .invalidVersion(let value): return "“\(value)” is not a valid version string."
         case .invalidURL(let value): return "“\(value)” is not a valid URL."
         case .invalidFileExtension(let value): return "The file extension is not allowed: \(value)"

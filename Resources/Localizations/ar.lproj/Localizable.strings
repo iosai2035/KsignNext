@@ -283,3 +283,13 @@
 "install.expiry.expired" = "انتهت صلاحية التوقيع — جدّد الآن";
 "install.expiry.unknown" = "تاريخ انتهاء التوقيع غير معروف";
 "install.refresh.error.nocontainer" = "التجديد غير متاح في هذا السياق.";
+"udid.section" = "UDID الجهاز";
+"udid.field" = "UDID";
+"udid.placeholder" = "UDID من 40 حرفًا";
+"udid.save" = "حفظ UDID";
+"udid.clear" = "إزالة";
+"udid.saved" = "UDID المحفوظ";
+"udid.empty" = "لم يُحفظ UDID بعد.";
+"udid.invalid" = "أدخل UDID من 40 حرفًا (أحرف A–F وأرقام فقط).";
+"udid.help" = "تحتاج آبل إلى UDID جهازك لتسجيله للحصول على ملف جديد. تجده في Finder (انقر الرقم التسلسلي تحت اسم الجهاز)، أو في iTunes، أو في 3uTools، أو على موقع udid.io.";
+"udid.auto.note" = "لا يستطيع التطبيق قراءة UDID بنفسه: لا توجد واجهة عامة في iOS لذلك، وحساب آبل المجاني لا يمكنه حمل استحقاق VPN الذي يتطلبه البحث التلقائي.";
