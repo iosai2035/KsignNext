@@ -104,13 +104,18 @@ final class AppleRefreshAdapterTests: XCTestCase {
     // MARK: - 2FA shapes
 
     func testPollPromptDecoding() {
+        // The real isideload shape: TwoFactorCallbackParams carries
+        // #[serde(rename_all = "camelCase")] on its own fields, while
+        // its nested TrustedNumber has no rename, so the number
+        // fields stay snake_case. A fixture in one case only would
+        // pass while the live prompt lost fields.
         let json: [String: Any] = [
             "pending": true,
             "prompt": [
-                "unknown": false, "sms": true, "last_error": NSNull(),
+                "unknown": false, "sms": true, "lastError": NSNull(),
                 "numbers": [["id": 2, "number_with_dial_code": "+1 ••• ••• 68",
                              "last_two_digits": "68", "push_mode": "sms"]],
-                "selected_number_id": NSNull(),
+                "selectedNumberId": NSNull(),
             ] as [String: Any],
         ]
         guard let prompt = TwoFactorPrompt.from(json: json) else {
@@ -119,8 +124,32 @@ final class AppleRefreshAdapterTests: XCTestCase {
         XCTAssertTrue(prompt.sms)
         XCTAssertEqual(prompt.numbers.count, 1)
         XCTAssertEqual(prompt.numbers[0].id, 2)
+        XCTAssertEqual(prompt.numbers[0].numberWithDialCode, "+1 ••• ••• 68")
         XCTAssertEqual(prompt.numbers[0].lastTwoDigits, "68")
+        XCTAssertNil(prompt.lastError)
         XCTAssertNil(prompt.selectedNumberID)
+    }
+
+    func testPollPromptDecodingSMSState() {
+        // After choosing SMS, isideload re-prompts with sms: true, a
+        // selected number, and a lastError when a previous code was
+        // wrong — all three must survive decoding.
+        let json: [String: Any] = [
+            "pending": true,
+            "prompt": [
+                "unknown": false, "sms": true, "lastError": "Incorrect verification code",
+                "numbers": [["id": 2, "number_with_dial_code": "+1 ••• ••• 68",
+                             "last_two_digits": "68", "push_mode": "sms"]],
+                "selectedNumberId": 2,
+            ] as [String: Any],
+        ]
+        guard let prompt = TwoFactorPrompt.from(json: json) else {
+            return XCTFail("Prompt did not decode")
+        }
+        XCTAssertTrue(prompt.sms)
+        XCTAssertEqual(prompt.lastError, "Incorrect verification code")
+        XCTAssertEqual(prompt.selectedNumberID, 2)
+        XCTAssertEqual(prompt.numbers[0].lastTwoDigits, "68")
     }
 
     func testTwoFactorResponseJSON() throws {

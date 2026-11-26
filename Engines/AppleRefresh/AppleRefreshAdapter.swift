@@ -281,12 +281,19 @@ public struct TwoFactorPrompt: Equatable, Sendable {
                 pushMode: raw["push_mode"] as? String ?? ""
             ))
         }
+        // isideload's TwoFactorCallbackParams carries
+        // #[serde(rename_all = "camelCase")] on its own fields, so the
+        // top-level keys are camelCase — but its nested TrustedNumber
+        // has no rename, so the number fields stay snake_case. Read
+        // the camelCase key first, snake_case as a fallback.
         return TwoFactorPrompt(
             unknown: prompt["unknown"] as? Bool ?? false,
             sms: prompt["sms"] as? Bool ?? false,
-            lastError: prompt["last_error"] as? String,
+            lastError: (prompt["lastError"] as? String)
+                ?? (prompt["last_error"] as? String),
             numbers: numbers,
-            selectedNumberID: prompt["selected_number_id"] as? Int
+            selectedNumberID: (prompt["selectedNumberId"] as? Int)
+                ?? (prompt["selected_number_id"] as? Int)
         )
     }
 }

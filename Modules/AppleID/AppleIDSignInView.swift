@@ -320,20 +320,24 @@ struct TwoFactorSheet: View {
                         .accessibilityIdentifier("appleid.2fa.devices")
                     }
                 }
-                if viewModel.codeRequested || prompt.numbers.isEmpty {
-                    Section(NSLocalizedString("appleid.2fa.code", comment: "")) {
-                        TextField(NSLocalizedString("appleid.2fa.code.placeholder", comment: ""),
-                                  text: $viewModel.twoFactorCode)
-                            .keyboardType(.numberPad)
-                            .accessibilityIdentifier("appleid.2fa.code")
-                        Button(NSLocalizedString("appleid.2fa.submit", comment: "")) {
-                            viewModel.submitCode()
-                        }
-                        .disabled(viewModel.twoFactorCode.trimmingCharacters(in: .whitespaces).count != 6)
-                        .accessibilityIdentifier("appleid.2fa.submit")
-                        Button(NSLocalizedString("appleid.2fa.resend", comment: "")) {
-                            viewModel.resendCode()
-                        }
+                // The code field is always visible: Apple usually pushes
+                // the verification code to a trusted device as soon as
+                // the password is accepted, so the user may already hold
+                // a code before choosing any delivery method — hiding
+                // the field behind that choice left them with a code
+                // and nowhere to type it.
+                Section(NSLocalizedString("appleid.2fa.code", comment: "")) {
+                    TextField(NSLocalizedString("appleid.2fa.code.placeholder", comment: ""),
+                              text: $viewModel.twoFactorCode)
+                        .keyboardType(.numberPad)
+                        .accessibilityIdentifier("appleid.2fa.code")
+                    Button(NSLocalizedString("appleid.2fa.submit", comment: "")) {
+                        viewModel.submitCode()
+                    }
+                    .disabled(viewModel.twoFactorCode.trimmingCharacters(in: .whitespaces).count != 6)
+                    .accessibilityIdentifier("appleid.2fa.submit")
+                    Button(NSLocalizedString("appleid.2fa.resend", comment: "")) {
+                        viewModel.resendCode()
                     }
                 }
                 Section {
