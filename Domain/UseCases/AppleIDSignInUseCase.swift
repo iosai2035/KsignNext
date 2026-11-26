@@ -90,7 +90,8 @@ public final class AppleIDSignInUseCase: @unchecked Sendable {
                     try await client.provisionAnisette(forceReset: false)
                     let login = try await client.login(
                         email: email, password: password,
-                        twoFactorHandler: twoFactorHandler)
+                        twoFactorHandler: twoFactorHandler,
+                        timeout: AppleRefreshClient.defaultTimeout)
                     let tokenProven = try await proveAppToken(client: client, claim: claim)
                     guard tokenProven else {
                         // Signed in, but Apple issued no Xcode token —

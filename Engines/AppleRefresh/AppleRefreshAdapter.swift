@@ -330,7 +330,7 @@ public protocol AppleRefreshClientProtocol: AnyObject, Sendable {
     func provisionAnisette(forceReset: Bool) async throws
     func login(email: String, password: String,
                twoFactorHandler: @escaping @Sendable (TwoFactorPrompt) async -> TwoFactorResponse,
-               timeout: TimeInterval = AppleRefreshClient.defaultTimeout) async throws -> AppleIDLoginResult
+               timeout: TimeInterval) async throws -> AppleIDLoginResult
     func getAppToken(app: String, claim: AppleRefreshClaim?) async throws -> AppleRefreshAppToken
     func sessionInfo() throws -> AppleRefreshSessionInfo
     func resetAnisette() throws
