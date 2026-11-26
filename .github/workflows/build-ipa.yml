@@ -6,6 +6,12 @@
 # certificate or provisioning profile is needed in CI, and none are
 # stored in the repo. Do NOT put certificates, P12 files or passwords
 # in the repo.
+#
+# DRAFT — Phase 1 Rust Apple-refresh core (design doc §8.2). This file
+# lives at /tmp/rust-workflow-build-ipa.yml and is NOT the workflow in
+# the repo: workflow files cannot be pushed via API, so the parent
+# applies this content via the browser. Do NOT copy it over
+# .github/workflows/build-ipa.yml by hand-editing the repo copy.
 name: Build IPA
 
 on:
@@ -33,7 +39,49 @@ jobs:
           swift --version
           python3 --version
 
+      # Phase 1 Rust core (design doc §8.2): build the isideload-based
+      # Apple-refresh XCFramework BEFORE "Regenerate Xcode project",
+      # because the generator links RustCore/AppleRefresh.xcframework
+      # into the app target only when it exists on disk (and fails
+      # hard when REQUIRE_RUST_XCFRAMEWORK=1, set on the regenerate
+      # step below). Cache keyed on Cargo.lock (Swatinem/rust-cache,
+      # the action the design doc recommends); a clean build of this
+      # tree is several minutes (ring compiles C/assembly).
+      # NOTE: RustCore/apple_refresh/Cargo.lock must exist in the repo
+      # before the first run with this step — the build uses --locked
+      # and fails if the lock is missing or out of date. Generate it
+      # once with `cargo generate-lockfile` in RustCore/apple_refresh
+      # (or let Scripts/build_rust_core.sh do it on its first run)
+      # and commit it.
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: RustCore/apple_refresh
+
+      - name: Build Rust Apple-refresh core (XCFramework)
+        run: |
+          set -o pipefail
+          rustup toolchain install stable
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios-sim
+          rustc --version; cargo --version
+          cd RustCore/apple_refresh
+          cargo build --release --locked --target aarch64-apple-ios
+          cargo build --release --locked --target aarch64-apple-ios-sim
+          cargo build --release --locked --target x86_64-apple-ios-sim
+          cd ../..
+          xcodebuild -create-xcframework \
+            -library RustCore/apple_refresh/target/aarch64-apple-ios/release/libapple_refresh.a \
+            -headers RustCore/apple_refresh/include \
+            -library RustCore/apple_refresh/target/aarch64-apple-ios-sim/release/libapple_refresh.a \
+            -headers RustCore/apple_refresh/include \
+            -library RustCore/apple_refresh/target/x86_64-apple-ios-sim/release/libapple_refresh.a \
+            -headers RustCore/apple_refresh/include \
+            -output RustCore/AppleRefresh.xcframework
+          ls -R RustCore/AppleRefresh.xcframework
+
       - name: Regenerate Xcode project (verifies file list)
+        env:
+          REQUIRE_RUST_XCFRAMEWORK: "1"
         run: python3 Scripts/generate_project.py
 
       - name: Generate AppIcon PNGs (binary icons are not in the repo)
