@@ -69,8 +69,7 @@ jobs:
       - name: Resolve SPM dependencies
         run: |
           xcodebuild -resolvePackageDependencies \
-            -project KsignNext.xcodeproj \
-        -scheme KsignNext
+            -project KsignNext.xcodeproj -scheme KsignNext
 
       # The test step hung three times right after the test bundles
       # finished building, before any test started: xcodebuild stalls
@@ -110,28 +109,46 @@ jobs:
           print(subprocess.check_output(["xcrun", "simctl", "list", "devices", "booted"]).decode())
           EOF
 
-    - name: Build tests (no execution)
-      timeout-minutes: 30
-      run: |
-        set -o pipefail
-        xcodebuild build-for-testing \
-        -project KsignNext.xcodeproj \
-        -scheme KsignNext \
-        -destination 'platform=iOS Simulator,id=${{ env.SIM_UDID }}' \
-        -only-testing:KsignNextTests ONLY_ACTIVE_ARCH=YES 2>&1 | tee build/test.log
-    - name: Run unit + integration + security tests
-      timeout-minutes: 30
-      run: |
-        set -o pipefail
-        xcodebuild test-without-building \
-        -project KsignNext.xcodeproj \
-        -scheme KsignNext \
-        -destination 'platform=iOS Simulator,id=${{ env.SIM_UDID }}' \
-        -only-testing:KsignNextTests ONLY_ACTIVE_ARCH=YES 2>&1 | tee -a build/test.log
+      - name: Build tests (no execution)
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild build-for-testing \
+            -project KsignNext.xcodeproj \
+            -scheme KsignNext \
+            -destination 'platform=iOS Simulator,id=${{ env.SIM_UDID }}' \
+            -only-testing:KsignNextTests \
+            ONLY_ACTIVE_ARCH=YES 2>&1 | tee build/test.log
+
+      - name: Run unit + integration + security tests
+        # Fresh simulator right before the test run: the simulator booted
+        # before the long build goes stale by the time xcodebuild installs
+        # the test bundles, and xcodebuild then hangs silently after the
+        # build (runs #76/#77: identical log tail, zero tests run).
+        timeout-minutes: 30
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          udid = os.environ["SIM_UDID"]
+          subprocess.run(["xcrun", "simctl", "shutdown", udid], capture_output=True)
+          subprocess.run(["xcrun", "simctl", "erase", udid], check=True)
+          subprocess.run(["xcrun", "simctl", "boot", udid], check=True)
+          subprocess.run(["xcrun", "simctl", "bootstatus", udid, "-b"], check=True, timeout=600)
+          print("Simulator ready:", udid)
+          PY
+          set -o pipefail
+          xcodebuild test-without-building \
+            -project KsignNext.xcodeproj \
+            -scheme KsignNext \
+            -destination 'platform=iOS Simulator,id=${{ env.SIM_UDID }}' \
+            -only-testing:KsignNextTests \
+            ONLY_ACTIVE_ARCH=YES 2>&1 | tee -a build/test.log
+
 
       - name: Archive (Release, unsigned for SideStore)
-      run: |
-            set -o pipefail
+        run: |
+          set -o pipefail
           mkdir -p build
           xcodebuild archive \
             -project KsignNext.xcodeproj \
