@@ -110,7 +110,8 @@ jobs:
           EOF
 
       - name: Run unit + integration + security tests
-        timeout-minutes: 25
+        # Build-for-testing alone takes ~26 min: run #76 was still signing the UITests runner bundle when the 25-min cap killed it, with zero tests run yet, so the cap must cover the full build plus test execution.
+        timeout-minutes: 60
         run: |
           set -o pipefail
           mkdir -p build
