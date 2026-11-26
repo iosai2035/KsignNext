@@ -83,7 +83,8 @@ private struct LicencesView: View {
 
 // MARK: - Third-party notices (from THIRD_PARTY_NOTICES.md at the repo root)
 
-private let thirdPartyNotices = #"""# Third-Party Notices — Ksign Next
+private let thirdPartyNotices = #"""
+# Third-Party Notices — Ksign Next
 
 ## SPM dependencies (declared in KsignNext.xcodeproj, resolved by Xcode)
 
@@ -184,4 +185,5 @@ resolved versions here after the first macOS build.
 ## This repository's own licence
 
 MIT — see `LICENSE`. It covers the original code in this repository
-only. Our code is written independently."""#
+only. Our code is written independently.
+"""#
