@@ -58,7 +58,7 @@ final class AppleIDSignInViewModel: ObservableObject {
     @Published var selectedNumberID: Int?
 
     private let useCase: AppleIDSignInUseCase
-    private let servers: AnisetteServerProvider
+    private var servers: AnisetteServerProvider
     private let gate = TwoFactorPromptGate()
 
     init(useCase: AppleIDSignInUseCase,
@@ -96,6 +96,10 @@ final class AppleIDSignInViewModel: ObservableObject {
             self?.selectedNumberID = prompt.selectedNumberID ?? prompt.numbers.first?.id
             self?.showing2FA = true
         }
+        // Capture the gate (not self) in the @Sendable handler: the
+        // 2FA prompt is delivered to the UI through the gate actor,
+        // and the handler runs off the main actor.
+        let gate = self.gate
         let handler: @Sendable (TwoFactorPrompt) async -> TwoFactorResponse = { prompt in
             await gate.waitForAnswer(to: prompt)
         }
