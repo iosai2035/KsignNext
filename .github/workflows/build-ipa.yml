@@ -17,7 +17,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,11 +47,10 @@ jobs:
       # once with `cargo generate-lockfile` in RustCore/apple_refresh
       # (or let Scripts/build_rust_core.sh do it on its first run)
       # and commit it.
-      # NOTE 2: only the two arm64 slices are built. rustc 1.100
-      # removed x86_64-apple-ios-sim (absent from
-      # `rustc --print target-list`), so the Intel slice cannot be
-      # built at all; the runner is macos-15 (Apple Silicon), whose
-      # simulator runs arm64 natively.
+      # NOTE 2: three slices. x86_64-apple-ios-sim does NOT exist as
+      # a Rust target — the Intel simulator triple is x86_64-apple-ios
+      # itself (its env is sim). The Intel runner runs the x86_64
+      # simulator, so all three slices are needed.
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
@@ -61,16 +60,19 @@ jobs:
         run: |
           set -o pipefail
           rustup toolchain install stable
-          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
           rustc --version; cargo --version
           cd RustCore/apple_refresh
           cargo build --release --locked --target aarch64-apple-ios
           cargo build --release --locked --target aarch64-apple-ios-sim
+          cargo build --release --locked --target x86_64-apple-ios
           cd ../..
           xcodebuild -create-xcframework \
             -library RustCore/apple_refresh/target/aarch64-apple-ios/release/libapple_refresh.a \
             -headers RustCore/apple_refresh/include \
             -library RustCore/apple_refresh/target/aarch64-apple-ios-sim/release/libapple_refresh.a \
+            -headers RustCore/apple_refresh/include \
+            -library RustCore/apple_refresh/target/x86_64-apple-ios/release/libapple_refresh.a \
             -headers RustCore/apple_refresh/include \
             -output RustCore/AppleRefresh.xcframework
           ls -R RustCore/AppleRefresh.xcframework
