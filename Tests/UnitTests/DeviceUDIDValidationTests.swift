@@ -23,7 +23,7 @@ final class DeviceUDIDValidationTests: XCTestCase {
 
     func testInvalidUDIDs() {
         XCTAssertFalse(DeviceUDIDValidator.isValid(""), "Empty is invalid")
-        XCTAssertFalse(DeviceUDIDValidator.isValid(Self.validUpper.dropLast()),
+        XCTAssertFalse(DeviceUDIDValidator.isValid(String(Self.validUpper.dropLast())),
                        "39 characters is invalid")
         XCTAssertFalse(DeviceUDIDValidator.isValid(Self.validUpper + "A"),
                        "41 characters is invalid")
