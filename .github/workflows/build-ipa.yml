@@ -126,6 +126,8 @@ jobs:
         # of exiting (run #85: 106/106 passed, no "TEST SUCCEEDED", killed
         # by the cap). Run serially (-disable-concurrent-testing) and bound
         # the wait to 12 minutes, then judge the result from the log itself.
+        # (xcodebuild writes "Test case" with a lowercase c — the judge
+        # must match that exact casing, or it counts zero and fails.)
         timeout-minutes: 30
         run: |
           python3 - <<'PY'
@@ -162,7 +164,7 @@ jobs:
             echo "Tests passed (xcodebuild reported success)."
             exit 0
           fi
-          if [ "$(grep -c "Test Case" build/test.log)" -eq 0 ]; then
+          if [ "$(grep -c "Test case" build/test.log)" -eq 0 ]; then
             echo "No test cases ran."
             exit 1
           fi
@@ -170,7 +172,7 @@ jobs:
             echo "Failing tests found in the log."
             exit 1
           fi
-          echo "All test cases in the log passed; xcodebuild hung at teardown (known runner issue)."
+          echo "Test log shows $(grep -c "Test case" build/test.log) test cases, 0 failed; xcodebuild hung at teardown (known runner issue)."
           exit 0
 
 
