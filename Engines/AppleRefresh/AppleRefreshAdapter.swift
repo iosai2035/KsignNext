@@ -280,6 +280,22 @@ public struct TwoFactorPrompt: Equatable, Sendable {
     public let numbers: [TwoFactorNumber]
     public let selectedNumberID: Int?
 
+    /// Parses the `poll_prompt` envelope. Returns nil when nothing is
+    /// pending. When a prompt IS pending but cannot be parsed, returns
+    /// a minimal prompt instead of nil: the user already holds a code
+    /// from Apple, and the code field needs none of the prompt's
+    /// numbers — dropping the prompt silently left the user with a
+    /// code and no place to type it (the sheet never opened). A wrong
+    /// code simply re-prompts (isideload re-asks with last_error).
+    static func fromOrFallback(json: [String: Any]) -> TwoFactorPrompt? {
+        guard json["pending"] as? Bool == true else { return nil }
+        if let prompt = from(json: json) { return prompt }
+        return TwoFactorPrompt(
+            unknown: true, sms: false,
+            lastError: NSLocalizedString("appleid.2fa.unparsed", comment: ""),
+            numbers: [], selectedNumberID: nil)
+    }
+
     static func from(json: [String: Any]) -> TwoFactorPrompt? {
         guard let prompt = json["prompt"] as? [String: Any] else { return nil }
         var numbers: [TwoFactorNumber] = []
@@ -516,8 +532,7 @@ public final class AppleRefreshClient: AppleRefreshClientProtocol, @unchecked Se
         let json = try Self.callRawJSON(step: "poll_prompt") { outJSON in
             apple_refresh_poll_prompt(session, outJSON)
         }
-        guard json["pending"] as? Bool == true else { return nil }
-        return TwoFactorPrompt.from(json: json)
+        return TwoFactorPrompt.fromOrFallback(json: json)
     }
 
     private func respond2FA(_ response: TwoFactorResponse) throws {

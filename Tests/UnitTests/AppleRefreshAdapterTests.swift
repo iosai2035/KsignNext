@@ -152,6 +152,21 @@ final class AppleRefreshAdapterTests: XCTestCase {
         XCTAssertEqual(prompt.numbers[0].lastTwoDigits, "68")
     }
 
+    func testPollPromptFallbackWhenUnparsable() {
+        // A pending prompt whose shape cannot be parsed must still
+        // open the sheet with a minimal prompt — never silently drop
+        // it, or the user holds a code from Apple with nowhere to
+        // type it.
+        let unparsable: [String: Any] = ["pending": true, "prompt": "not-a-dict"]
+        guard let fallback = TwoFactorPrompt.fromOrFallback(json: unparsable) else {
+            return XCTFail("Fallback prompt missing for unparsable pending prompt")
+        }
+        XCTAssertTrue(fallback.numbers.isEmpty)
+        XCTAssertNotNil(fallback.lastError)
+        XCTAssertNil(TwoFactorPrompt.fromOrFallback(json: ["pending": false]))
+        XCTAssertNil(TwoFactorPrompt.fromOrFallback(json: [:]))
+    }
+
     func testTwoFactorResponseJSON() throws {
         let code = try TwoFactorResponse.code("123456").jsonString()
         XCTAssertTrue(code.contains("\"code\""))

@@ -323,6 +323,8 @@
 "appleid.2fa.code.placeholder" = "123456";
 "appleid.2fa.submit" = "Submit code";
 "appleid.2fa.resend" = "Resend code";
+"appleid.2fa.unparsed" = "Apple's verification request could not be read — enter the code sent to you directly.";
+"appleid.2fa.received" = "Apple's verification request arrived — enter the code in the sheet.";
 "realrefresh.step.signin" = "Signing in with your Apple ID…";
 "realrefresh.step.team" = "Finding your developer team…";
 "realrefresh.step.device" = "Registering this device with Apple…";

@@ -116,6 +116,10 @@ final class AppleIDSignInViewModel: ObservableObject, TwoFactorAnswering {
             self?.twoFactorPrompt = prompt
             self?.twoFactorCode = ""
             self?.selectedNumberID = prompt.selectedNumberID ?? prompt.numbers.first?.id
+            // Diagnostic: if the sheet ever fails to open, this line
+            // still shows on the form, proving the prompt arrived —
+            // the sheet is a separate step from the prompt itself.
+            self?.statusMessage = NSLocalizedString("appleid.2fa.received", comment: "")
             self?.showing2FA = true
         }
         // Capture the gate (not self) in the @Sendable handler: the

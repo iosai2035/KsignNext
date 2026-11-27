@@ -323,6 +323,8 @@
 "appleid.2fa.code.placeholder" = "123456";
 "appleid.2fa.submit" = "إرسال الرمز";
 "appleid.2fa.resend" = "إعادة إرسال الرمز";
+"appleid.2fa.unparsed" = "تعذّر قراءة طلب التحقق من آبل — أدخل الرمز المرسل إليك مباشرة.";
+"appleid.2fa.received" = "وصل طلب التحقق من آبل — أدخل الرمز في النافذة.";
 "realrefresh.step.signin" = "جارٍ تسجيل الدخول بحساب آبل…";
 "realrefresh.step.team" = "جارٍ العثور على فريق المطوّر…";
 "realrefresh.step.device" = "جارٍ تسجيل هذا الجهاز لدى آبل…";
