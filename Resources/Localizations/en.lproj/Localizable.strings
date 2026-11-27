@@ -165,6 +165,7 @@
 "sources.add.name" = "Source name";
 "sources.add" = "Add source";
 "sources.error.url" = "Enter a valid HTTPS source URL.";
+"sources.error.name" = "Enter a name for the source.";
 "sources.apps.empty" = "No apps in this source";
 "sources.apps.empty.detail" = "Refresh the source or check its URL.";
 "sources.download" = "Download";

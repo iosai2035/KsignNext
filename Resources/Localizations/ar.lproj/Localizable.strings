@@ -165,6 +165,7 @@
 "sources.add.name" = "اسم المصدر";
 "sources.add" = "إضافة المصدر";
 "sources.error.url" = "أدخل رابط مصدر HTTPS صالحًا.";
+"sources.error.name" = "أدخل اسمًا للمصدر.";
 "sources.apps.empty" = "لا توجد تطبيقات في هذا المصدر";
 "sources.apps.empty.detail" = "حدّث المصدر أو تحقق من رابطه.";
 "sources.download" = "تنزيل";

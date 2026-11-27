@@ -59,7 +59,14 @@ final class SourcesViewModel: ObservableObject {
     func addSource() {
         let name = newSourceName.trimmingCharacters(in: .whitespacesAndNewlines)
         let urlString = newSourceURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, let url = URL(string: urlString), url.scheme == "https" else {
+        // The name and the URL are checked separately on purpose:
+        // one combined guard blamed the URL when the name was the
+        // empty field, so a valid URL was reported as invalid.
+        guard !name.isEmpty else {
+            errorMessage = NSLocalizedString("sources.error.name", comment: ""); return
+        }
+        guard let url = URL(string: urlString), url.scheme == "https",
+              let host = url.host, !host.isEmpty else {
             errorMessage = NSLocalizedString("sources.error.url", comment: ""); return
         }
         guard !sources.contains(where: {
