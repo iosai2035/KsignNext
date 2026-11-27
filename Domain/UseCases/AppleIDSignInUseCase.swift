@@ -27,6 +27,25 @@ import Foundation
 /// the real refresh. It is closed on sign-out, on a fresh sign-in,
 /// and by `closeSignedInClient()`. The password is never held here
 /// — it lives in the Keychain through the store.
+/// One sign-in attempt, reported to the UI so a multi-attempt
+/// sign-in is never a silent spinner: the user sees which claim and
+/// server is being tried and how many attempts remain. A sign-in
+/// that stalls before the 2FA prompt shows its progress instead of
+/// an endless spinner with no explanation.
+public struct SignInAttemptProgress: Sendable, Equatable {
+    public let attempt: Int
+    public let totalAttempts: Int
+    public let claimPreset: String
+    public let serverHost: String
+
+    public init(attempt: Int, totalAttempts: Int, claimPreset: String, serverHost: String) {
+        self.attempt = attempt
+        self.totalAttempts = totalAttempts
+        self.claimPreset = claimPreset
+        self.serverHost = serverHost
+    }
+}
+
 public final class AppleIDSignInUseCase: @unchecked Sendable {
 
     public static let xcodeAuthApp = "com.apple.gs.xcode.auth"
@@ -98,9 +117,15 @@ public final class AppleIDSignInUseCase: @unchecked Sendable {
 
     // MARK: - Sign-in
 
+    /// - Parameters:
+    ///   - onAttempt: called before every claim/server attempt with
+    ///     its progress (attempt N of M, claim, server). Nil by
+    ///     default; the sign-in screen wires it to a status line so
+    ///     the user always sees what the app is trying.
     public func signIn(email: String, password: String,
                        claimOverride: AppleRefreshClaim? = nil,
-                       twoFactorHandler: @escaping @Sendable (TwoFactorPrompt) async -> TwoFactorResponse) async throws -> AppleIDSession {
+                       twoFactorHandler: @escaping @Sendable (TwoFactorPrompt) async -> TwoFactorResponse,
+                       onAttempt: (@Sendable (SignInAttemptProgress) -> Void)? = nil) async throws -> AppleIDSession {
         let email = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !email.isEmpty, email.contains("@"), email.contains(".") else {
             throw AppleRefreshError.invalidArgument(reason: "Enter a valid Apple ID email address.")
@@ -117,9 +142,18 @@ public final class AppleIDSignInUseCase: @unchecked Sendable {
 
         let claims: [AppleRefreshClaim] = claimOverride.map { [$0] }
             ?? [.sideinstaller, .apparition, .server]
+        let serversToTry = servers.serversToTry()
+        let totalAttempts = max(1, serversToTry.count * claims.count)
+        var attemptNumber = 0
         var lastError: AppleRefreshError?
-        for server in servers.serversToTry() {
+        for server in serversToTry {
             for claim in claims {
+                attemptNumber += 1
+                onAttempt?(SignInAttemptProgress(
+                    attempt: attemptNumber,
+                    totalAttempts: totalAttempts,
+                    claimPreset: claim.presetName,
+                    serverHost: URL(string: server)?.host ?? server))
                 let client = clientFactory()
                 lock.lock(); currentClient = client; lock.unlock()
                 do {

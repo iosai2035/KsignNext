@@ -104,17 +104,18 @@ final class AppleRefreshAdapterTests: XCTestCase {
     // MARK: - 2FA shapes
 
     func testPollPromptDecoding() {
-        // The real isideload shape: TwoFactorCallbackParams carries
-        // #[serde(rename_all = "camelCase")] on its own fields, while
-        // its nested TrustedNumber has no rename, so the number
-        // fields stay snake_case. A fixture in one case only would
-        // pass while the live prompt lost fields.
+        // The real isideload shape, read from the vendored source:
+        // both TwoFactorCallbackParams AND its nested TrustedNumber
+        // carry #[serde(rename_all = "camelCase")], so every field
+        // on the wire is camelCase (numberWithDialCode,
+        // lastTwoDigits, pushMode). A fixture in the wrong case
+        // would pass while the live prompt lost fields.
         let json: [String: Any] = [
             "pending": true,
             "prompt": [
                 "unknown": false, "sms": true, "lastError": NSNull(),
-                "numbers": [["id": 2, "number_with_dial_code": "+1 ••• ••• 68",
-                             "last_two_digits": "68", "push_mode": "sms"]],
+                "numbers": [["id": 2, "numberWithDialCode": "+1 ••• ••• 68",
+                             "lastTwoDigits": "68", "pushMode": "sms"]],
                 "selectedNumberId": NSNull(),
             ] as [String: Any],
         ]
@@ -130,6 +131,28 @@ final class AppleRefreshAdapterTests: XCTestCase {
         XCTAssertNil(prompt.selectedNumberID)
     }
 
+    func testPollPromptDecodingSnakeCaseFallback() {
+        // Older cores serialised the number fields snake_case; the
+        // parser keeps that as a fallback so neither shape loses
+        // the trusted numbers.
+        let json: [String: Any] = [
+            "pending": true,
+            "prompt": [
+                "unknown": false, "sms": false, "lastError": NSNull(),
+                "numbers": [["id": 3, "number_with_dial_code": "+966 ••• ••• 49",
+                             "last_two_digits": "49", "push_mode": "push"]],
+                "selectedNumberId": NSNull(),
+            ] as [String: Any],
+        ]
+        guard let prompt = TwoFactorPrompt.from(json: json) else {
+            return XCTFail("Prompt did not decode")
+        }
+        XCTAssertEqual(prompt.numbers.count, 1)
+        XCTAssertEqual(prompt.numbers[0].numberWithDialCode, "+966 ••• ••• 49")
+        XCTAssertEqual(prompt.numbers[0].lastTwoDigits, "49")
+        XCTAssertEqual(prompt.numbers[0].pushMode, "push")
+    }
+
     func testPollPromptDecodingSMSState() {
         // After choosing SMS, isideload re-prompts with sms: true, a
         // selected number, and a lastError when a previous code was
@@ -138,8 +161,8 @@ final class AppleRefreshAdapterTests: XCTestCase {
             "pending": true,
             "prompt": [
                 "unknown": false, "sms": true, "lastError": "Incorrect verification code",
-                "numbers": [["id": 2, "number_with_dial_code": "+1 ••• ••• 68",
-                             "last_two_digits": "68", "push_mode": "sms"]],
+                "numbers": [["id": 2, "numberWithDialCode": "+1 ••• ••• 68",
+                             "lastTwoDigits": "68", "pushMode": "sms"]],
                 "selectedNumberId": 2,
             ] as [String: Any],
         ]

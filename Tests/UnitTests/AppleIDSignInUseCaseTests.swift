@@ -244,4 +244,33 @@ final class AppleIDSignInUseCaseTests: XCTestCase {
             email: "test@example.com", password: "pw") { _ in .code("123456") }
         XCTAssertEqual(session.email, "test@example.com")
     }
+
+    func testAttemptProgressReportedPerClaim() async throws {
+        // The first claim times out (the live stall: the password is
+        // accepted but no 2FA prompt arrives), the second succeeds.
+        // The UI must see both attempts — a silent spinner hides
+        // exactly this.
+        fake.loginQueue = [.failure(.timeout), .success(Self.login)]
+        fake.tokenQueue = [.success(Self.token)]
+        // The progress closure is @Sendable, so collect through a
+        // box rather than a captured var.
+        final class ProgressBox: @unchecked Sendable {
+            var items: [SignInAttemptProgress] = []
+        }
+        let box = ProgressBox()
+        let session = try await useCase.signIn(
+            email: "test@example.com", password: "pw",
+            twoFactorHandler: { _ in .abort },
+            onAttempt: { box.items.append($0) })
+        XCTAssertEqual(session.claimPreset, "apparition")
+        let seen = box.items
+        XCTAssertEqual(seen.count, 2)
+        XCTAssertEqual(seen[0].attempt, 1)
+        XCTAssertEqual(seen[1].attempt, 2)
+        XCTAssertEqual(seen[0].totalAttempts, seen[1].totalAttempts)
+        XCTAssertGreaterThanOrEqual(seen[0].totalAttempts, 2)
+        XCTAssertEqual(seen[0].claimPreset, "sideinstaller")
+        XCTAssertEqual(seen[1].claimPreset, "apparition")
+        XCTAssertFalse(seen[0].serverHost.isEmpty)
+    }
 }

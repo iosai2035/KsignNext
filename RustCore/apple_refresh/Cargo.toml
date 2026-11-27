@@ -18,6 +18,14 @@ crate-type = ["staticlib"]
 # mandatory (multi-thread runtime + provisioning WebSocket);
 # `keyring-storage` is deliberately OFF — our crate supplies its own
 # file-backed SideloadingStorage (src/storage.rs), AltLoad-style.
+#
+# VENDORED (2026-11-27): the dependency is patched to the local copy
+# in vendor/isideload (same commit, MIT) so Ksign Next can carry one
+# login-flow patch — a failed trusted-device 2FA request no longer
+# aborts the login; the code field still opens (see PATCHES.md in the
+# vendor root). The [patch] section at the end of this file replaces
+# the git source with the vendored one; the version requirement is
+# unchanged.
 isideload = { git = "https://github.com/nab138/isideload",
               rev = "326e56229d0727cb6e7b34c8cf03e37e2cd3e17d",
               default-features = false,
@@ -44,3 +52,8 @@ rootcause = "0.12"
 
 [profile.release]
 panic = "abort"
+
+[patch."https://github.com/nab138/isideload"]
+# The vendored checkout is a workspace: the crate itself lives in
+# the `isideload/` member directory.
+isideload = { path = "vendor/isideload/isideload" }

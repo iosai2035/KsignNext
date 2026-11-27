@@ -133,7 +133,19 @@ final class AppleIDSignInViewModel: ObservableObject, TwoFactorAnswering {
             let session = try await useCase.signIn(
                 email: email, password: password,
                 claimOverride: claimChoice.claim,
-                twoFactorHandler: handler)
+                twoFactorHandler: handler,
+                onAttempt: { [weak self] progress in
+                    // Runs off the main actor: hop back before
+                    // touching @Published state. A sign-in that
+                    // stalls before the 2FA prompt shows this line
+                    // instead of a bare spinner.
+                    Task { @MainActor in
+                        self?.statusMessage = String(format: NSLocalizedString(
+                            "appleid.signin.attempt", comment: ""),
+                            progress.attempt, progress.totalAttempts,
+                            progress.claimPreset, progress.serverHost)
+                    }
+                })
             self.session = session
             password = ""
             statusMessage = NSLocalizedString("appleid.signedin", comment: "")

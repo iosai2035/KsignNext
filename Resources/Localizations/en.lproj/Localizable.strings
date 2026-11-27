@@ -305,6 +305,7 @@
 "appleid.server.custom" = "Custom anisette server";
 "appleid.server.invalid" = "Enter a valid https anisette server URL.";
 "appleid.signin" = "Sign in";
+"appleid.signin.attempt" = "Signing in… attempt %d of %d — %@ via %@";
 "appleid.signedin" = "Signed in — the Xcode token was proven.";
 "appleid.signout" = "Sign out";
 "appleid.notsignedin" = "Not signed in";

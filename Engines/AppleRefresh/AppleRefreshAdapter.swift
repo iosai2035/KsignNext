@@ -301,18 +301,25 @@ public struct TwoFactorPrompt: Equatable, Sendable {
         var numbers: [TwoFactorNumber] = []
         for raw in (prompt["numbers"] as? [[String: Any]]) ?? [] {
             guard let id = raw["id"] as? Int else { continue }
+            // isideload's TrustedNumber carries
+            // #[serde(rename_all = "camelCase")], so the wire fields
+            // are camelCase (numberWithDialCode, lastTwoDigits,
+            // pushMode) — the same as the top-level prompt fields.
+            // snake_case is kept only as a fallback for older cores.
             numbers.append(TwoFactorNumber(
                 id: id,
-                numberWithDialCode: raw["number_with_dial_code"] as? String ?? "",
-                lastTwoDigits: raw["last_two_digits"] as? String ?? "",
-                pushMode: raw["push_mode"] as? String ?? ""
+                numberWithDialCode: (raw["numberWithDialCode"] as? String)
+                    ?? (raw["number_with_dial_code"] as? String) ?? "",
+                lastTwoDigits: (raw["lastTwoDigits"] as? String)
+                    ?? (raw["last_two_digits"] as? String) ?? "",
+                pushMode: (raw["pushMode"] as? String)
+                    ?? (raw["push_mode"] as? String) ?? ""
             ))
         }
         // isideload's TwoFactorCallbackParams carries
         // #[serde(rename_all = "camelCase")] on its own fields, so the
-        // top-level keys are camelCase — but its nested TrustedNumber
-        // has no rename, so the number fields stay snake_case. Read
-        // the camelCase key first, snake_case as a fallback.
+        // top-level keys are camelCase. Read the camelCase key first,
+        // snake_case as a fallback.
         return TwoFactorPrompt(
             unknown: prompt["unknown"] as? Bool ?? false,
             sms: prompt["sms"] as? Bool ?? false,

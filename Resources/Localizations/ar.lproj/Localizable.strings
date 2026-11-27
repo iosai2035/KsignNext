@@ -305,6 +305,7 @@
 "appleid.server.custom" = "خادم Anisette مخصص";
 "appleid.server.invalid" = "أدخل رابط https صحيح لخادم Anisette.";
 "appleid.signin" = "تسجيل الدخول";
+"appleid.signin.attempt" = "جارٍ تسجيل الدخول… المحاولة %d من %d — الهوية %@ عبر %@";
 "appleid.signedin" = "تم تسجيل الدخول — وثبت رمز Xcode.";
 "appleid.signout" = "تسجيل الخروج";
 "appleid.notsignedin" = "غير مسجَّل";

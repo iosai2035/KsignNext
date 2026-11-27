@@ -1461,7 +1461,6 @@ checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 [[package]]
 name = "isideload"
 version = "0.5.2"
-source = "git+https://github.com/nab138/isideload?rev=326e56229d0727cb6e7b34c8cf03e37e2cd3e17d#326e56229d0727cb6e7b34c8cf03e37e2cd3e17d"
 dependencies = [
  "aes 0.9.4",
  "aes-gcm",

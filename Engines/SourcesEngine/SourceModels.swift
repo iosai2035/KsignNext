@@ -100,17 +100,61 @@ public struct AltSource: Codable, Sendable, Equatable {
         identifier = try container.decode(String.self, forKey: .identifier)
         subtitle = try container.decodeIfPresent(String.self, forKey: .subtitle)
         description = try container.decodeIfPresent(String.self, forKey: .description)
-        iconURL = try container.decodeIfPresent(URL.self, forKey: .iconURL)
-        headerURL = try container.decodeIfPresent(URL.self, forKey: .headerURL)
-        website = try container.decodeIfPresent(URL.self, forKey: .website)
-        apps = try container.decode([AltSourceApp].self, forKey: .apps)
-        news = try container.decodeIfPresent([AltSourceNewsItem].self, forKey: .news)
+        iconURL = container.decodeTolerant(URL.self, forKey: .iconURL)
+        headerURL = container.decodeTolerant(URL.self, forKey: .headerURL)
+        website = container.decodeTolerant(URL.self, forKey: .website)
+        // Lossy: one malformed app must not kill the whole source —
+        // real sources carry apps with fields this parser does not
+        // know, and the user still wants the other apps listed.
+        apps = try container.decodeLossy([AltSourceApp].self, forKey: .apps)
+        news = try container.decodeLossyIfPresent([AltSourceNewsItem].self, forKey: .news)
+    }
+}
+
+// MARK: - Lossy arrays
+
+/// Decodes an array element-by-element, silently dropping elements
+/// that fail to decode. A source document is third-party data: one
+/// bad app (or version, or news item) must never make the whole
+/// document unreadable. Implemented on a wrapper type so each
+/// element gets its own decoder — a failure cannot corrupt its
+/// siblings, which a shared unkeyed container would risk.
+private struct FailableDecodable<T: Decodable>: Decodable {
+    let value: T?
+
+    init(from decoder: Decoder) throws {
+        value = try? decoder.singleValueContainer().decode(T.self)
+    }
+}
+
+extension KeyedDecodingContainer {
+    /// Decodes a required array, dropping undecodable elements.
+    /// Throws only when the key itself is missing or is not an array.
+    func decodeLossy<T: Decodable>(_ type: [T].Type, forKey key: Key) throws -> [T] {
+        try decode([FailableDecodable<T>].self, forKey: key).compactMap(\.value)
+    }
+
+    /// Decodes an optional array, dropping undecodable elements.
+    /// Returns nil when the key is absent or null.
+    func decodeLossyIfPresent<T: Decodable>(_ type: [T].Type, forKey key: Key) throws -> [T]? {
+        try decodeIfPresent([FailableDecodable<T>].self, forKey: key)?.compactMap(\.value)
+    }
+
+    /// Decodes an optional value, yielding nil for a missing key, a
+    /// null, OR a malformed value — never throws. For display
+    /// metadata (icons, permissions) where a bad value must not
+    /// fail the document that carries it.
+    func decodeTolerant<T: Decodable>(_ type: T.Type, forKey key: Key) -> T? {
+        (try? decodeIfPresent(type, forKey: key)) ?? nil
     }
 }
 
 // MARK: - App
 
 /// One permission entry declared by an app (`appPermissions`).
+/// The wire shape varies by source: entitlements carry `name` (and
+/// sometimes `description`), while privacy entries carry `name` and
+/// `usageDescription` — so the description is read from either key.
 public struct AltSourceAppPermission: Codable, Sendable, Equatable {
     public let name: String
     public let description: String?
@@ -119,16 +163,75 @@ public struct AltSourceAppPermission: Codable, Sendable, Equatable {
         self.name = name
         self.description = description
     }
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case description
+        case usageDescription
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+            ?? container.decodeIfPresent(String.self, forKey: .usageDescription)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(description, forKey: .description)
+    }
 }
 
 /// The `appPermissions` object: entitlements and privacy usage strings.
+///
+/// Both fields accept the two shapes real sources use: an ARRAY of
+/// `{name, description?}` / `{name, usageDescription?}` objects
+/// (the AltStore format — `privacy` is an array, NOT a dictionary)
+/// and a DICTIONARY of `name: description` strings. Anything else
+/// decodes as nil: permissions are display metadata and must never
+/// fail the app, let alone the whole source.
 public struct AltSourceAppPermissions: Codable, Sendable, Equatable {
     public let entitlements: [AltSourceAppPermission]?
-    public let privacy: [String: String]?
+    public let privacy: [AltSourceAppPermission]?
 
-    public init(entitlements: [AltSourceAppPermission]? = nil, privacy: [String: String]? = nil) {
+    public init(entitlements: [AltSourceAppPermission]? = nil, privacy: [AltSourceAppPermission]? = nil) {
         self.entitlements = entitlements
         self.privacy = privacy
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case entitlements
+        case privacy
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        entitlements = Self.decodePermissions(from: container, forKey: .entitlements)
+        privacy = Self.decodePermissions(from: container, forKey: .privacy)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(entitlements, forKey: .entitlements)
+        try container.encodeIfPresent(privacy, forKey: .privacy)
+    }
+
+    /// One permissions field, in either wire shape. Never throws:
+    /// a malformed field yields nil instead of killing the app.
+    private static func decodePermissions(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) -> [AltSourceAppPermission]? {
+        if let array = container.decodeTolerant([AltSourceAppPermission].self, forKey: key) {
+            return array
+        }
+        if let dict = container.decodeTolerant([String: String].self, forKey: key) {
+            return dict.map { AltSourceAppPermission(name: $0.key, description: $0.value) }
+                .sorted { $0.name < $1.name }
+        }
+        return nil
     }
 }
 
@@ -192,8 +295,12 @@ public struct AltSourceApp: Codable, Sendable, Equatable {
         iconURL = try container.decode(URL.self, forKey: .iconURL)
         tintColor = try container.decodeIfPresent(String.self, forKey: .tintColor)
         category = try container.decodeIfPresent(String.self, forKey: .category)
-        versions = try container.decode([AltSourceVersion].self, forKey: .versions)
-        appPermissions = try container.decodeIfPresent(AltSourceAppPermissions.self, forKey: .appPermissions)
+        // Lossy: one bad version must not drop the app — the other
+        // versions are still listable and downloadable.
+        versions = try container.decodeLossy([AltSourceVersion].self, forKey: .versions)
+        // Never throws: permissions are display metadata; a malformed
+        // `appPermissions` yields nil instead of dropping the app.
+        appPermissions = container.decodeTolerant(AltSourceAppPermissions.self, forKey: .appPermissions)
     }
 
     /// All versions, newest first.
