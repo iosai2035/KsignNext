@@ -294,6 +294,15 @@ void ZBundle::GetNodeChangedFiles(jvalue& jvNode)
 
 bool ZBundle::SignNode(jvalue& jvNode)
 {
+	// Ksign Next patch (H1 rescope): every node built by GetSignFolderInfo
+	// carries a non-empty bundle_id, so a node without one is corrupt (e.g.
+	// a stale cache entry). Fail before any of its files are signed instead
+	// of after (the old check below only ran after the files loop).
+	string strNodeBundleId = jvNode["bundle_id"];
+	if (strNodeBundleId.empty()) {
+		ZLog::Error(">>> Can't get BundleID in Info.plist! (SignNode)\n");
+		return false;
+	}
 	if (jvNode.has("files")) {
 		for (size_t i = 0; i < jvNode["files"].size(); i++) {
 			string strFile = jvNode["files"][i];

@@ -392,7 +392,7 @@ bool ZArchO::BuildCodeSignature(ZSignAsset* pSignAsset,
 	string strCodeDirectorySlot;
 	string strAltnateCodeDirectorySlot;
 	if (!pSignAsset->m_bSHA256Only) {
-		ZSign::SlotBuildCodeDirectory(false,
+		if (!ZSign::SlotBuildCodeDirectory(false,
 			m_pBase,
 			m_uCodeLength,
 			pCodeSlots1Data,
@@ -408,10 +408,14 @@ bool ZArchO::BuildCodeSignature(ZSignAsset* pSignAsset,
 			strDerEntitlementsSlotSHA1,
 			IsExecute(),
 			pSignAsset->m_bAdhoc,
-			strCodeDirectorySlot);
+			strCodeDirectorySlot)) {
+			ZLog::Error(">>> Build CodeDirectory (SHA-1) failed!\n");
+			strOutput.clear();
+			return false;
+		}
 	}
 
-	ZSign::SlotBuildCodeDirectory(true,
+	if (!ZSign::SlotBuildCodeDirectory(true,
 		m_pBase,
 		m_uCodeLength,
 		pCodeSlots256Data,
@@ -427,7 +431,11 @@ bool ZArchO::BuildCodeSignature(ZSignAsset* pSignAsset,
 		strDerEntitlementsSlotSHA256,
 		IsExecute(),
 		pSignAsset->m_bAdhoc,
-		strAltnateCodeDirectorySlot);
+		strAltnateCodeDirectorySlot)) {
+		ZLog::Error(">>> Build CodeDirectory (SHA-256) failed!\n");
+		strOutput.clear();
+		return false;
+	}
 	if (pSignAsset->m_bSHA256Only) {
 		// SHA256-based code directory is usually the alternate; however, make it the primary (and only)
 		// code directory if `m_bUseSHA256Only == true`.
@@ -563,7 +571,10 @@ bool ZArchO::Sign(ZSignAsset* pSignAsset,
 	}
 
 	string strCodeSignBlob;
-	BuildCodeSignature(pSignAsset, bForce, strBundleId, strInfoSHA1, strInfoSHA256, strCodeResourcesSHA1, strCodeResourcesSHA256, strCodeSignBlob);
+	if (!BuildCodeSignature(pSignAsset, bForce, strBundleId, strInfoSHA1, strInfoSHA256, strCodeResourcesSHA1, strCodeResourcesSHA256, strCodeSignBlob)) {
+		ZLog::Error(">>> Build CodeSignature failed!\n");
+		return false;
+	}
 	if (strCodeSignBlob.empty()) {
 		ZLog::Error(">>> Build CodeSignature failed!\n");
 		return false;
@@ -614,7 +625,7 @@ uint32_t ZArchO::ReallocCodeSignSpace(const string& strNewFile)
 
 	codesignature_command* pcslc = (codesignature_command*)m_pCodeSignSegment;
 	if (NULL == pcslc) {
-		if (m_uLoadCommandsFreeSpace < 4) {
+		if (m_uLoadCommandsFreeSpace < sizeof(codesignature_command)) {
 			ZLog::Error(">>> Can't find free space of LoadCommands for CodeSignature!\n");
 			return 0;
 		}
