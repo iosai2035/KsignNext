@@ -34,16 +34,19 @@ final class SourceDetailViewModel: ObservableObject {
     /// Downloads the app through the shared download engine, so the
     /// download is queued, limited, and visible in the Downloads tab.
     func downloadApp(_ app: SourceListingApp) async {
-        guard !enqueuedDownloadURLs.contains(app.downloadURLString) else { return }
-        guard let url = URL(string: app.downloadURLString), url.scheme == "https" else {
+        // SRC-1: an app with no version has no download URL — the
+        // row's button is disabled, and this is a no-op guard.
+        guard let urlString = app.downloadURLString,
+              !enqueuedDownloadURLs.contains(urlString) else { return }
+        guard let url = URL(string: urlString), url.scheme == "https" else {
             errorMessage = NSLocalizedString("downloads.error.url", comment: ""); return
         }
-        enqueuedDownloadURLs.insert(app.downloadURLString)
+        enqueuedDownloadURLs.insert(urlString)
         do {
             let fileName = url.lastPathComponent.isEmpty ? "\(app.name).ipa" : url.lastPathComponent
             _ = try await sourcesModel.enqueueDownload(url: url, fileName: fileName)
         } catch {
-            enqueuedDownloadURLs.remove(app.downloadURLString)
+            enqueuedDownloadURLs.remove(urlString)
             errorMessage = error.localizedDescription
         }
     }
@@ -88,16 +91,46 @@ struct SourceDetailView: View {
                 }
             } else {
                 List(viewModel.apps) { app in
-                    VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-                        Text(app.name)
-                        Text("\(app.bundleID) • \(app.version)").font(.caption).foregroundStyle(.secondary)
-                        Button(NSLocalizedString("sources.download", comment: "")) {
-                            Task { await viewModel.downloadApp(app) }
+                    HStack(alignment: .top, spacing: DS.Spacing.sm) {
+                        // SRC-3: the source's own icon (56×56; a
+                        // placeholder glyph while loading, on failure,
+                        // or when the source gives no icon at all).
+                        AsyncImage(url: app.iconURL) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image.resizable().scaledToFill()
+                            case .failure, .empty:
+                                Image(systemName: "app.badge")
+                                    .foregroundStyle(.secondary)
+                            @unknown default:
+                                Image(systemName: "app.badge")
+                                    .foregroundStyle(.secondary)
+                            }
                         }
-                        .font(.caption)
-                        .dsSecondaryButton()
-                        .disabled(viewModel.enqueuedDownloadURLs.contains(app.downloadURLString))
-                        .accessibilityIdentifier("sourceDetail.download.\(app.name)")
+                        .frame(width: 56, height: 56)
+                        .background(DS.ColorPalette.cardBackground, in: RoundedRectangle(cornerRadius: DS.cornerRadius))
+                        .clipShape(RoundedRectangle(cornerRadius: DS.cornerRadius))
+                        VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
+                            Text(app.name)
+                            Text("\(app.bundleID) • \(app.version)").font(.caption).foregroundStyle(.secondary)
+                            if let description = app.localizedDescription, !description.isEmpty {
+                                Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                            }
+                            if let size = app.size, size > 0, let date = app.date {
+                                Text("\(Workspace.fileSizeString(size)) • \(date, style: .date)").font(.caption).foregroundStyle(.secondary)
+                            } else if let size = app.size, size > 0 {
+                                Text(Workspace.fileSizeString(size)).font(.caption).foregroundStyle(.secondary)
+                            } else if let date = app.date {
+                                Text(date, style: .date).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Button(NSLocalizedString("sources.download", comment: "")) {
+                                Task { await viewModel.downloadApp(app) }
+                            }
+                            .font(.caption)
+                            .dsSecondaryButton()
+                            .disabled(app.downloadURLString == nil || viewModel.enqueuedDownloadURLs.contains(app.downloadURLString ?? ""))
+                            .accessibilityIdentifier("sourceDetail.download.\(app.name)")
+                        }
                     }
                 }
             }

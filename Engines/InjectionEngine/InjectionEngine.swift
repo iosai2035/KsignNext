@@ -392,6 +392,12 @@ public final class InjectionEngine: Sendable {
                   let size = Int(sizeRaw.trimmingCharacters(in: .whitespaces)) else {
                 throw SigningError.invalidIPA(reason: "Corrupt ar header in DEB: \(url.lastPathComponent).")
             }
+            // R-H2: a negative member size would make the subdata
+            // range below trap (the bounds guard after it passes
+            // vacuously for a negative size).
+            guard size >= 0 else {
+                throw SigningError.invalidIPA(reason: "Negative ar member size in DEB: \(url.lastPathComponent).")
+            }
             let name = nameRaw.trimmingCharacters(in: .whitespaces)
                 .replacingOccurrences(of: "/", with: "")
             let bodyStart = offset + 60
@@ -472,6 +478,10 @@ public final class InjectionEngine: Sendable {
             let name = String(bytes: header.subdata(in: 0..<100).prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
             let sizeString = String(bytes: header.subdata(in: 124..<136).prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
             let size = Int(sizeString.trimmingCharacters(in: .whitespaces), radix: 8) ?? 0
+            // R-H2: the octal field accepts a leading sign, so a
+            // negative size is real — it would trap in the subdata
+            // ranges below and drive the offset backwards (hang).
+            guard size >= 0 else { return nil }
             let typeFlag = header[156]
             let blocks = Int((size + 511) / 512)
             let bodyStart = offset + 512
@@ -503,6 +513,11 @@ public final class InjectionEngine: Sendable {
             let name = String(bytes: header.subdata(in: 0..<100).prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
             let sizeString = String(bytes: header.subdata(in: 124..<136).prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
             let size = Int(sizeString.trimmingCharacters(in: .whitespaces), radix: 8) ?? 0
+            // R-H2: a negative size would drive the offset backwards
+            // (hang) and trap in the subdata ranges below.
+            guard size >= 0 else {
+                throw SigningError.invalidIPA(reason: "Negative tar member size.")
+            }
             let typeFlag = header[156]
             let blocks = Int((size + 511) / 512)
             let bodyStart = offset + 512
@@ -840,6 +855,10 @@ public final class InjectionEngine: Sendable {
             guard let nameRaw = String(bytes: header[0..<16], encoding: .utf8),
                   let sizeRaw = String(bytes: header[48..<58], encoding: .utf8),
                   let size = Int(sizeRaw.trimmingCharacters(in: .whitespaces)) else { return nil }
+            // R-H2: a negative member size would make the subdata
+            // range below trap (the bounds guard after it passes
+            // vacuously for a negative size).
+            guard size >= 0 else { return nil }
             let name = nameRaw.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "/", with: "")
             let bodyStart = offset + 60
             guard bodyStart + size <= data.count else { return nil }

@@ -55,6 +55,22 @@ The poll contract itself (`poll_prompt` returning
 needed no change, and the `"devices"` callback action was already
 handled by the Rust session layer.
 
+## Patch 2 — an unrecognized login Status is an error, not LoggedIn
+
+Found by the Gemini deep dive (2026-11-28, Pass 1, finding 2FA-1) and
+verified against this file: at the end of `login_inner`, when the
+`Status` dict carried neither a recognized `au` value nor `hsc ==
+409`, the stock code only logged a warning and fell through to
+`Ok(LoginState::LoggedIn)`. A login Apple never confirmed as complete
+therefore reported success; Swift's app-token proof then failed and
+the use case silently retried the next claim/server — spinner and
+attempt counter advancing, no code field, eventual generic error.
+Now: unknown `hsc` values, an invalid `hsc` integer, and a Status
+with neither `au` nor `hsc` all bail with an error naming the
+unexpected Status. `hsc == 200` still falls through to LoggedIn
+(the verified success shape: 200 means the proof succeeded with no
+2FA required).
+
 ## Re-vendoring
 
 To update to a newer isideload commit: replace this directory with

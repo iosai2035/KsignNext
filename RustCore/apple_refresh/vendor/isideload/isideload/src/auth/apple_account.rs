@@ -947,12 +947,23 @@ impl AppleAccount {
                     return Ok(LoginState::NeedsDevice2FAVerification);
                 }
                 Some(code) => {
-                    warn!("Unknown status code {}: {:?}", code, status);
+                    // Ksign Next patch (see PATCHES.md): an unrecognized
+                    // status is an error, not a login. The old code only
+                    // warned and fell through to LoggedIn, so a login
+                    // Apple never confirmed as complete reported success
+                    // and the app spun on the app-token proof with no
+                    // code field. hsc == 200 still falls through to
+                    // LoggedIn below (verified success shape).
+                    bail!("Unexpected login status code {}: {:?}", code, status);
                 }
                 None => {
-                    warn!("Unknown status code (invalid integer): {:?}", status);
+                    bail!("Unexpected login status (invalid hsc integer): {:?}", status);
                 }
             }
+        } else {
+            // No `au` and no `hsc`: Apple did not confirm the login
+            // as complete, so never report success.
+            bail!("Unexpected login status (no au/hsc): {:?}", status);
         }
 
         Ok(LoginState::LoggedIn)
