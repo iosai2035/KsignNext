@@ -7,10 +7,12 @@ import Foundation
 /// - Certificate validation is never disabled; there is no custom
 ///   `URLSessionDelegate` that trusts arbitrary certificates.
 /// - Timeouts and typed errors; callers receive `AppError.network`.
-public final class HTTPClient {
+/// - The session is injectable for tests; the redirect cap applies via
+///   the delegate on the default session the client builds itself.
+public final class HTTPClient: @unchecked Sendable {
     public static let shared = HTTPClient()
 
-    public struct Configuration {
+    public struct Configuration: Sendable {
         public var requestTimeout: TimeInterval = 30
         public var resourceTimeout: TimeInterval = 300
         public var allowsCellularAccess: Bool = true
@@ -44,7 +46,7 @@ public final class HTTPClient {
         }
     }
 
-    public struct Request {
+    public struct Request: Sendable {
         public var url: URL
         public var method: String = "GET"
         public var headers: [String: String] = [:]
@@ -115,8 +117,12 @@ public final class HTTPClient {
         var request = Request(url: url)
         request.method = "HEAD"
         let response = try await send(request)
-        guard let value = response.headers["Content-Length"] as? String ?? (response.headers["content-length"] as? String),
-              let length = Int64(value) else { return nil }
+        // allHeaderFields keys are case-sensitive in the dictionary even
+        // though HTTP header names are not, so search case-insensitively.
+        let value = response.headers.first { entry in
+            (entry.key as? String)?.lowercased() == "content-length"
+        }?.value as? String
+        guard let value, let length = Int64(value) else { return nil }
         return length
     }
 }

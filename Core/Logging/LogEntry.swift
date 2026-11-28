@@ -1,6 +1,6 @@
 import Foundation
 
-public enum LogLevel: String, Codable, CaseIterable, Comparable {
+public enum LogLevel: String, Codable, CaseIterable, Sendable, Comparable {
     case debug
     case info
     case warning
@@ -24,7 +24,7 @@ public enum LogLevel: String, Codable, CaseIterable, Comparable {
 
 /// One structured log line. `operationID` ties entries from one user
 /// operation (import, signing, download) together for filtering.
-public struct LogEntry: Identifiable, Codable, Equatable {
+public struct LogEntry: Codable, Equatable, Sendable, Identifiable {
     public let id: UUID
     public let timestamp: Date
     public let level: LogLevel

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<model type="com.apple.IDECoreDataModeler.DataModel" documentVersion="1.0" lastSavedToolsVersion="21754" systemVersion="23E224" minimumToolsVersion="Automatic" sourceLanguage="Swift" userDefinedModelVersionIdentifier="">
+    <entity name="Certificate" representedClassName="Certificate" syncable="YES" codeGenerationType="class">
+        <attribute name="commonName" optional="YES" attributeType="String"/>
+        <attribute name="expirationDate" optional="YES" attributeType="Date" usesScalarValueType="NO" indexed="YES"/>
+        <attribute name="fileURL" optional="YES" attributeType="String"/>
+        <attribute name="fingerprint" attributeType="String" indexed="YES"/>
+        <attribute name="id" attributeType="UUID" usesScalarValueType="NO" indexed="YES"/>
+        <attribute name="importedAt" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="isStoredInKeychain" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="issuer" optional="YES" attributeType="String"/>
+        <attribute name="keychainAccount" optional="YES" attributeType="String"/>
+        <attribute name="kind" attributeType="String"/>
+        <attribute name="name" attributeType="String"/>
+        <attribute name="notBefore" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="serialNumber" optional="YES" attributeType="String"/>
+        <attribute name="status" attributeType="String"/>
+        <attribute name="teamIdentifier" optional="YES" attributeType="String"/>
+        <uniquenessConstraints>
+            <uniquenessConstraint>
+                <constraint value="id"/>
+            </uniquenessConstraint>
+            <uniquenessConstraint>
+                <constraint value="fingerprint"/>
+            </uniquenessConstraint>
+        </uniquenessConstraints>
+    </entity>
+    <entity name="ProvisioningProfile" representedClassName="ProvisioningProfile" syncable="YES" codeGenerationType="class">
+        <attribute name="appIdentifier" attributeType="String"/>
+        <attribute name="bundleIdentifierPrefixes" optional="YES" attributeType="Transformable" valueTransformerName="NSSecureUnarchiveFromData" customClassName="[String]"/>
+        <attribute name="certificates" optional="YES" attributeType="Transformable" valueTransformerName="NSSecureUnarchiveFromData" customClassName="[String]"/>
+        <attribute name="creationDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="dataHash" attributeType="String"/>
+        <attribute name="entitlements" optional="YES" attributeType="Transformable" valueTransformerName="NSSecureUnarchiveFromData" customClassName="[String: String]"/>
+        <attribute name="expirationDate" optional="YES" attributeType="Date" usesScalarValueType="NO" indexed="YES"/>
+        <attribute name="fileURL" optional="YES" attributeType="String"/>
+        <attribute name="id" attributeType="UUID" usesScalarValueType="NO" indexed="YES"/>
+        <attribute name="importedAt" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="kind" attributeType="String"/>
+        <attribute name="name" attributeType="String"/>
+        <attribute name="platform" optional="YES" attributeType="String"/>
+        <attribute name="provisionedDevices" optional="YES" attributeType="Transformable" valueTransformerName="NSSecureUnarchiveFromData" customClassName="[String]"/>
+        <attribute name="teamIdentifier" attributeType="String"/>
+        <attribute name="teamName" optional="YES" attributeType="String"/>
+        <attribute name="uuid" attributeType="String" indexed="YES"/>
+        <uniquenessConstraints>
+            <uniquenessConstraint>
+                <constraint value="id"/>
+            </uniquenessConstraint>
+            <uniquenessConstraint>
+                <constraint value="uuid"/>
+            </uniquenessConstraint>
+        </uniquenessConstraints>
+    </entity>
+    <elements>
+        <element name="Certificate" positionX="0" positionY="0" width="128" height="196"/>
+        <element name="ProvisioningProfile" positionX="180" positionY="0" width="128" height="196"/>
+    </elements>
+</model>

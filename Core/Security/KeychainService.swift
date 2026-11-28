@@ -8,6 +8,11 @@ import Security
 /// Stateless (only an immutable service name) and the Security framework
 /// calls are thread-safe, so the class is `@unchecked Sendable` and can
 /// be captured in `@Sendable` resolvers.
+///
+/// Every failure throws `CertificateError.keychainFailure(reason:)`.
+/// `read` / `readPassword` return `nil` when no item exists — that is
+/// not a failure. Callers must surface thrown errors, never swallow
+/// them (W-5/M5).
 public final class KeychainService: @unchecked Sendable {
     public static let shared = KeychainService()
 
@@ -84,8 +89,15 @@ public final class KeychainService: @unchecked Sendable {
         }
     }
 
+    /// `true` iff an item exists for `account`. A genuine Keychain
+    /// failure is treated as "not present" here by design — callers
+    /// that need the failure surfaced must call `read(account:)`.
     public func exists(account: String) -> Bool {
-        (try? read(account: account)) != nil
+        do {
+            return try read(account: account) != nil
+        } catch {
+            return false
+        }
     }
 
     // MARK: - Private helpers
