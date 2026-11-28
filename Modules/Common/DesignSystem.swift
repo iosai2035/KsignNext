@@ -72,6 +72,83 @@ public enum DS {
 
     /// Plain text action button style.
     public static let plainButton: PlainButtonStyle = .plain
+
+    /// Accessibility: minimum touch target (contract §C.8).
+    public enum Accessibility {
+        public static let minTouchTarget: CGFloat = 44
+    }
+
+    /// Band colour for an expiry state (contract §B.11): green >7
+    /// days, orange 1–7 days, red ≤24h / expired.
+    public static func expiryColor(for band: ExpiryBand) -> Color {
+        switch band {
+        case .healthy: return .green
+        case .warning: return .orange
+        case .urgent, .expired: return .red
+        }
+    }
+
+    /// Semantic countdown text for an expiry, in the user's language.
+    /// Never a raw number and never a fake countdown: no expiry date
+    /// → "No expiry date". `days` is `daysUntilExpiration`
+    /// (calendar days from today; negative = already expired).
+    public static func expiryText(days: Int?) -> String {
+        guard let days else { return Loc.string("expiry.none") }
+        if days < 0 { return Loc.string("expiry.expiredDays", -days) }
+        if days == 0 { return Loc.string("expiry.today") }
+        if days == 1 { return Loc.string("expiry.tomorrow") }
+        return Loc.string("expiry.inDays", days)
+    }
+}
+
+/// Expiry countdown pill: band-coloured text with a semantic
+/// VoiceOver label ("Expires in 3 days"), never raw numbers
+/// (contract §C.8). The label is the whole status, so it is the
+/// accessibility label, not a value.
+struct ExpiryPill: View {
+    let daysUntilExpiration: Int?
+
+    var body: some View {
+        let band = expiryBand(daysUntilExpiration: daysUntilExpiration)
+        Text(DS.expiryText(days: daysUntilExpiration))
+            .font(.caption)
+            .fontWeight(.semibold)
+            .foregroundStyle(DS.expiryColor(for: band))
+            .padding(.horizontal, DS.Spacing.md)
+            .padding(.vertical, DS.Spacing.xs)
+            .background(DS.expiryColor(for: band).opacity(0.15), in: Capsule())
+            .accessibilityLabel(DS.expiryText(days: daysUntilExpiration))
+    }
+}
+
+/// Localised strings with the contract §C.8 fallback rule: a missing
+/// key falls back to the English string and logs a warning to
+/// `AppLogger` — it never renders a raw key.
+enum Loc {
+    /// Localised string for `key`, formatted with `args` when the
+    /// string contains format specifiers.
+    static func string(_ key: String, _ args: CVarArg...) -> String {
+        let raw = Bundle.main.localizedString(forKey: key, value: nil, table: nil)
+        if raw != key {
+            return format(raw, args: args)
+        }
+        // Missing key: fall back to the English table, and log it.
+        if let enURL = Bundle.main.url(forResource: "en", withExtension: "lproj"),
+           let enBundle = Bundle(url: enURL) {
+            let english = enBundle.localizedString(forKey: key, value: nil, table: nil)
+            if english != key {
+                Task { await AppLogger.shared.warning("Missing localized string for key: \(key)") }
+                return format(english, args: args)
+            }
+        }
+        Task { await AppLogger.shared.warning("Missing localized string for key: \(key)") }
+        return key
+    }
+
+    private static func format(_ string: String, args: [CVarArg]) -> String {
+        guard !args.isEmpty else { return string }
+        return String(format: string, locale: .current, arguments: args)
+    }
 }
 
 public extension View {
@@ -112,4 +189,62 @@ public extension View {
     func dsInlineTitle() -> some View {
         navigationBarTitleDisplayMode(.inline)
     }
+
+    /// Leading toolbar button that opens the side menu from any tab.
+    /// Hidden on iPad, where the side menu is a persistent sidebar.
+    func dsSideMenuButton() -> some View {
+        toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                SideMenuToolbarButton()
+            }
+        }
+    }
+}
+
+/// The side-menu toolbar button. Separated so the `toolbar` modifier
+/// above stays small; hidden when the horizontal size class is
+/// regular (iPad persistent sidebar).
+private struct SideMenuToolbarButton: View {
+    @EnvironmentObject private var coordinator: AppCoordinator
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    var body: some View {
+        if sizeClass != .regular {
+            Button {
+                coordinator.openSideMenu()
+            } label: {
+                Image(systemName: "line.3.horizontal")
+                    .frame(minWidth: DS.Accessibility.minTouchTarget, minHeight: DS.Accessibility.minTouchTarget)
+            }
+            .accessibilityLabel(Loc.string("sidemenu.title"))
+            .accessibilityHint(Loc.string("sidemenu.open.hint"))
+        }
+    }
+}
+
+/// System share sheet (`UIActivityViewController`) for iOS 16
+/// SwiftUI. The iPad popover gets a source view from the key window,
+/// so presenting it never crashes for a missing source rect.
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        // iPad presents the sheet in a popover, which needs a source
+        // view. Prefer the key window; fall back to any window in the
+        // first scene so the popover never has a nil source.
+        let windows = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .flatMap({ $0.windows })
+        if let rootView = (windows.first(where: { $0.isKeyWindow }) ?? windows.first)?
+            .rootViewController?.view {
+            controller.popoverPresentationController?.sourceView = rootView
+            controller.popoverPresentationController?.sourceRect = CGRect(
+                x: rootView.bounds.midX, y: rootView.bounds.midY, width: 0, height: 0
+            )
+        }
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

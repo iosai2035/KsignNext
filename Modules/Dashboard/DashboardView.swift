@@ -1,299 +1,284 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
-struct DashboardCounts: Equatable {
-    var importedApps = 0, signedApps = 0, certificates = 0, downloads = 0, operations = 0
-}
-
-struct ActivityItem: Identifiable, Equatable {
-    let id = UUID()
-    let title: String
-    let detail: String
-    let date: Date
-}
-
-protocol DashboardDataProviding {
-    func loadCounts() -> DashboardCounts
-    func loadRecentActivity() -> [ActivityItem]
-    func expiringCertificates() async -> [ExpiringItem]
-}
-
-/// One expiring certificate: its display name and expiry date. The
-/// view renders the countdown from the date (`Text(date,
-/// style: .relative)` — "in 3 days"), so the data stays a date
-/// instead of a preformatted string that cannot count down.
-struct ExpiringItem: Identifiable, Equatable {
-    let id = UUID()
-    let name: String
-    let date: Date
-}
-
-/// Reads real on-disk state (Documents workspace); returns zero/empty when nothing exists.
-final class LocalDashboardDataProvider: DashboardDataProviding {
-    /// The persisted log file `LogsManager` writes
-    /// (Application Support/KsignNext/logs.jsonl), read directly so
-    /// this provider can stay synchronous.
-    static var persistedLogURL: URL? {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("KsignNext/logs.jsonl")
-    }
-
-    /// Parses the persisted JSON-lines log file, oldest first.
-    static func persistedLogEntries() -> [LogEntry] {
-        guard let url = persistedLogURL,
-              let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return text.split(separator: "\n", omittingEmptySubsequences: true).compactMap { line in
-            guard let data = line.data(using: .utf8) else { return nil }
-            return try? decoder.decode(LogEntry.self, from: data)
-        }
-    }
-
-    func loadCounts() -> DashboardCounts {
-        let fm = FileManager.default
-        guard let docs = Workspace.documents else { return DashboardCounts() }
-        func count(_ folder: String, ext: String? = nil) -> Int {
-            let dir = docs.appendingPathComponent(folder, isDirectory: true)
-            let items = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-            if let ext { return items.filter { $0.pathExtension.lowercased() == ext }.count }
-            return items.count
-        }
-        return DashboardCounts(
-            importedApps: count("ImportedApps", ext: "ipa"),
-            signedApps: count("SignedApps", ext: "ipa"),
-            certificates: count("Certificates"),
-            downloads: count("Downloads", ext: "ipa"),
-            operations: Self.persistedLogEntries().count
-        )
-    }
-
-    /// The 10 newest persisted log entries, with their real
-    /// timestamps (never `Date()`).
-    func loadRecentActivity() -> [ActivityItem] {
-        Self.persistedLogEntries().suffix(10).reversed().map { entry in
-            ActivityItem(
-                title: String(entry.message.prefix(120)),
-                detail: AppLogLevel(from: entry.level).title,
-                date: entry.timestamp
-            )
-        }
-    }
-
-    /// Provisioning profiles in the Certificates folder whose parsed
-    /// `ExpirationDate` falls within the next 7 days (already-expired
-    /// ones included — they need action too). Each profile is parsed
-    /// with `ProvisioningEngine.parseProvisioningProfile(at:)` — the
-    /// one CMS-stripping implementation — because a .mobileprovision
-    /// is a CMS-signed blob, not a bare plist: raw
-    /// PropertyListSerialization on it can never succeed, so the old
-    /// scan reported no profile expiry at all (W-2). A profile that
-    /// fails to parse is skipped, not fatal: one bad file must not
-    /// hide the others. .p12 expiry still comes from the certificate
-    /// repository (see `DashboardViewModel.refresh()`).
-    func expiringCertificates() async -> [ExpiringItem] {
-        guard let dir = Workspace.folder("Certificates") else { return [] }
-        let items = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-        let limit = Calendar.current.date(byAdding: .day, value: 7, to: Date()) ?? Date()
-        let engine = ProvisioningEngine()
-        var found: [(name: String, date: Date)] = []
-        for url in items where url.pathExtension.lowercased() == "mobileprovision" {
-            guard let model = try? await engine.parseProvisioningProfile(at: url),
-                  let expiry = model.expirationDate,
-                  expiry <= limit else { continue }
-            found.append((model.name, expiry))
-        }
-        return found.sorted { $0.date < $1.date }.map { ExpiringItem(name: $0.name, date: $0.date) }
-    }
-}
-
-@MainActor
-final class DashboardViewModel: ObservableObject {
-    @Published var counts = DashboardCounts()
-    @Published var recentActivity: [ActivityItem] = []
-    @Published var expiringCertificates: [ExpiringItem] = []
-    @Published var isLoading = false
-    /// True once the first load has finished; the empty state is only
-    /// shown after this, so it never flashes while data is loading.
-    @Published var hasLoaded = false
-    @Published var errorMessage: String?
-    private let provider: DashboardDataProviding
-    /// Set by the view from the app container; when set, the
-    /// repository's parsed P12 expiry dates are merged with the
-    /// provisioning-profile scan above.
-    var certificateRepository: CertificateRepository?
-
-    init(provider: DashboardDataProviding = LocalDashboardDataProvider(), certificateRepository: CertificateRepository? = nil) {
-        self.provider = provider
-        self.certificateRepository = certificateRepository
-    }
-
-    func refresh() async {
-        guard !isLoading else { return }
-        isLoading = true
-        defer { isLoading = false; hasLoaded = true }
-        errorMessage = nil
-        counts = provider.loadCounts()
-        recentActivity = provider.loadRecentActivity()
-        var expiring = await provider.expiringCertificates()
-        if let repository = certificateRepository,
-           let models = try? await repository.fetchAll() {
-            let limit = Calendar.current.date(byAdding: .day, value: 7, to: Date()) ?? Date()
-            for model in models {
-                guard let expiry = model.expirationDate, expiry <= limit else { continue }
-                let item = ExpiringItem(name: model.name, date: expiry)
-                if !expiring.contains(where: { $0.name == item.name }) { expiring.append(item) }
-            }
-        }
-        expiringCertificates = expiring.sorted { $0.date < $1.date }
-    }
-}
-
+/// Dashboard tab (contract §C.2): expiry overview + banners + recent
+/// activity + counts. Tapping a banner opens the Certificates
+/// manager; tapping an expiry row opens that profile's detail;
+/// tapping an activity row opens Diagnostics.
 struct DashboardView: View {
-    @StateObject private var viewModel = DashboardViewModel()
     @EnvironmentObject private var coordinator: AppCoordinator
+    @StateObject private var viewModel: DashboardViewModel
+    @State private var showImporter = false
+
+    init(container: DependencyContainer) {
+        _viewModel = StateObject(wrappedValue: DashboardViewModel(container: container))
+    }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: DS.sectionSpacing) {
-                    if !viewModel.expiringCertificates.isEmpty {
-                        expiryBanner
-                    }
-                    countsGrid
-                    shortcutsSection
-                    recentSection
-                }
-                .padding(DS.Spacing.xl)
-                .animation(.default, value: viewModel.hasLoaded)
+        ScrollView {
+            VStack(alignment: .leading, spacing: DS.sectionSpacing) {
+                bannersSection
+                expiryCard
+                countsSection
+                activitySection
             }
-            .refreshable { await viewModel.refresh() }
-            .navigationTitle(NSLocalizedString("dashboard.title", comment: ""))
-            .dsLargeTitle()
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { Task { await viewModel.refresh() } } label: {
-                        Label(NSLocalizedString("common.refresh", comment: ""), systemImage: "arrow.clockwise")
-                    }
-                    .accessibilityIdentifier("dashboard.refresh")
+            .padding()
+        }
+        .navigationTitle(Loc.string("dashboard.title"))
+        .dsLargeTitle()
+        .dsSideMenuButton()
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    Task { await viewModel.refresh() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .frame(minWidth: DS.Accessibility.minTouchTarget, minHeight: DS.Accessibility.minTouchTarget)
                 }
+                .accessibilityLabel(Loc.string("common.refresh"))
             }
-            .task {
-                viewModel.certificateRepository = coordinator.container.certificateRepository
+        }
+        .task { await viewModel.refresh() }
+        .fileImporter(
+            isPresented: $showImporter,
+            allowedContentTypes: [Self.p12Type, Self.provisionType]
+        ) { result in
+            switch result {
+            case .success(let url):
+                Task { await importPickedFile(url) }
+            case .failure(let error):
+                viewModel.errorMessage = error.localizedDescription
+            }
+        }
+        .alert(Loc.string("alert.error.title"), isPresented: Binding(
+            get: { viewModel.errorMessage != nil },
+            set: { if !$0 { viewModel.errorMessage = nil } }
+        )) {
+            Button(Loc.string("common.ok"), role: .cancel) { viewModel.errorMessage = nil }
+        } message: {
+            Text(viewModel.errorMessage ?? "")
+        }
+    }
+
+    private static var p12Type: UTType { UTType(filenameExtension: "p12") ?? .data }
+    private static var provisionType: UTType { UTType(filenameExtension: "mobileprovision") ?? .data }
+
+    /// Routes a file picked from the Dashboard's Import button: a
+    /// .p12 opens the password sheet, a profile imports at once.
+    private func importPickedFile(_ url: URL) async {
+        switch url.pathExtension.lowercased() {
+        case "p12":
+            coordinator.pendingP12ImportURL = url
+            coordinator.presentedSheet = .p12PasswordPrompt(url)
+        case "mobileprovision":
+            let ok = await coordinator.certificatesViewModel.importProfile(url: url)
+            if ok {
                 await viewModel.refresh()
+            } else if let message = coordinator.certificatesViewModel.errorMessage {
+                viewModel.errorMessage = message
             }
-            .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: Binding(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil } })) {
-                Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
-            } message: { Text(viewModel.errorMessage ?? "") }
+        default:
+            break
         }
     }
 
-    private var expiryBanner: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-            Label(NSLocalizedString("dashboard.expiry.warning", comment: ""), systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-            // Each row is a live countdown ("in 3 days") and a button
-            // into Certificates, where the expiring item can be acted on.
-            ForEach(viewModel.expiringCertificates) { item in
-                Button { coordinator.selectTab(.certificates) } label: {
-                    HStack {
-                        Text(item.name).font(.caption)
-                        Spacer()
-                        Text(item.date, style: .relative).font(.caption).foregroundStyle(.secondary)
-                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
-                    }
-                    .contentShape(Rectangle())
+    // MARK: - Banners (§B.11, persistent while the condition holds)
+
+    @ViewBuilder
+    private var bannersSection: some View {
+        ForEach(viewModel.banners) { profile in
+            let days = profile.daysUntilExpiration ?? 0
+            Button {
+                coordinator.openCertificatesManager()
+            } label: {
+                HStack(spacing: DS.Spacing.md) {
+                    Image(systemName: days < 0 ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
+                    Text(bannerText(for: profile, days: days))
+                        .font(.subheadline)
+                        .multilineTextAlignment(.leading)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
                 }
-                .buttonStyle(.plain)
+                .foregroundStyle(days <= 0 ? .red : .orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-        }
-        .padding(DS.cardPadding)
-        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: DS.cornerRadius))
-        .accessibilityIdentifier("dashboard.expiryBanner")
-        .transition(.opacity)
-    }
-
-    private var countsGrid: some View {
-        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: DS.Spacing.lg) {
-            countCard(NSLocalizedString("dashboard.count.imported", comment: ""), value: viewModel.counts.importedApps, icon: "app.badge", tab: .applications, id: "dashboard.count.imported")
-            countCard(NSLocalizedString("dashboard.count.signed", comment: ""), value: viewModel.counts.signedApps, icon: "checkmark.seal.fill", tab: .applications, id: "dashboard.count.signed")
-            countCard(NSLocalizedString("dashboard.count.certs", comment: ""), value: viewModel.counts.certificates, icon: "key.fill", tab: .certificates, id: "dashboard.count.certs")
-            // Downloads live under Settings, so the card lands there.
-            countCard(NSLocalizedString("dashboard.count.downloads", comment: ""), value: viewModel.counts.downloads, icon: "arrow.down.circle", tab: .settings, id: "dashboard.count.downloads")
-        }
-        .accessibilityIdentifier("dashboard.counts")
-    }
-
-    /// A count card is a button into the screen the number comes
-    /// from — a static number on the home screen is a dead end.
-    private func countCard(_ title: String, value: Int, icon: String, tab: AppTab, id: String) -> some View {
-        Button { coordinator.selectTab(tab) } label: {
-            VStack(alignment: .leading, spacing: DS.Spacing.sm) {
-                HStack(spacing: DS.Spacing.xs) {
-                    Image(systemName: icon).foregroundStyle(DS.ColorPalette.accentBrand)
-                    Text(title).font(.caption).foregroundStyle(.secondary)
-                }
-                Text("\(value)").font(.largeTitle.bold())
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
             .dsCard()
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier(id)
-    }
-
-    private var shortcutsSection: some View {
-        VStack(alignment: .leading, spacing: DS.rowSpacing) {
-            Text(NSLocalizedString("dashboard.shortcuts", comment: "")).dsSectionHeader()
-            shortcut(NSLocalizedString("tab.applications", comment: ""), icon: "app.badge", tab: .applications, id: "dashboard.shortcut.apps")
-            shortcut(NSLocalizedString("tab.signing", comment: ""), icon: "signature", tab: .signing, id: "dashboard.shortcut.sign")
-            shortcut(NSLocalizedString("tab.certificates", comment: ""), icon: "key.fill", tab: .certificates, id: "dashboard.shortcut.certs")
+            .accessibilityLabel(bannerText(for: profile, days: days))
+            .accessibilityHint(Loc.string("certs.open.hint"))
         }
     }
 
-    private func shortcut(_ title: String, icon: String, tab: AppTab, id: String) -> some View {
-        Button { coordinator.selectTab(tab) } label: {
-            Label(title, systemImage: icon).frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .dsSecondaryButton()
-        .accessibilityIdentifier(id)
+    private func bannerText(for profile: ProvisioningModel, days: Int) -> String {
+        if days < 0 { return Loc.string("banner.expiry.expired", profile.name) }
+        if days == 0 { return Loc.string("banner.expiry.today", profile.name) }
+        return Loc.string("banner.expiry.soon", profile.name, days)
     }
 
-    private var recentSection: some View {
-        VStack(alignment: .leading, spacing: DS.rowSpacing) {
-            Text(NSLocalizedString("dashboard.recent", comment: "")).dsSectionHeader()
-            if !viewModel.hasLoaded {
-                ProgressView()
-                    .frame(maxWidth: .infinity)
-                    .padding(DS.Spacing.xl)
-                    .accessibilityIdentifier("dashboard.recentLoading")
-            } else if viewModel.recentActivity.isEmpty {
-                EmptyStateView(
-                    NSLocalizedString("dashboard.recent.empty", comment: ""),
-                    systemImage: "clock",
-                    description: Text(NSLocalizedString("dashboard.recent.empty.detail", comment: ""))
-                ) {
-                    Button(NSLocalizedString("tab.applications", comment: "")) {
-                        coordinator.selectTab(.applications)
-                    }
-                    .dsPrimaryButton()
-                    .accessibilityIdentifier("dashboard.recent.empty.import")
+    // MARK: - Expiry card
+
+    private var expiryCard: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.md) {
+            Text(Loc.string("dashboard.expiry.title"))
+                .dsSectionHeader()
+                .accessibilityLabel(Loc.string("dashboard.expiry.title"))
+            if viewModel.expiringProfiles.isEmpty {
+                Text(Loc.string("dashboard.expiry.empty"))
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(Loc.string("dashboard.expiry.empty"))
+                Button(Loc.string("certs.import")) {
+                    showImporter = true
                 }
-                .accessibilityIdentifier("dashboard.recentEmpty")
+                .dsPrimaryButton()
+                .accessibilityLabel(Loc.string("certs.import"))
             } else {
-                VStack(alignment: .leading, spacing: DS.rowSpacing) {
-                    ForEach(viewModel.recentActivity) { item in
-                        VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
-                            Text(item.title).font(.subheadline)
-                            HStack(spacing: DS.Spacing.xs) {
-                                Text(item.detail).font(.caption).foregroundStyle(.secondary)
-                                Text(item.date, style: .relative).font(.caption).foregroundStyle(.secondary)
+                ForEach(viewModel.expiringProfiles) { profile in
+                    NavigationLink(value: AppRoute.profileDetail(profile.id)) {
+                        HStack(spacing: DS.Spacing.md) {
+                            VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
+                                Text(profile.name)
+                                    .font(.subheadline)
+                                    .lineLimit(1)
+                                Text("\(String(profile.uuid.prefix(8))) · \(profile.teamIdentifier)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
                             }
+                            Spacer()
+                            ExpiryPill(daysUntilExpiration: profile.daysUntilExpiration)
                         }
-                        if item.id != viewModel.recentActivity.last?.id { Divider() }
+                        .frame(minHeight: DS.Accessibility.minTouchTarget)
                     }
+                    .accessibilityLabel("\(profile.name), \(DS.expiryText(days: profile.daysUntilExpiration))")
                 }
-                .dsCard()
             }
+        }
+        .dsCard()
+    }
+
+    // MARK: - Counts
+
+    private var countsSection: some View {
+        HStack(spacing: DS.Spacing.md) {
+            Button {
+                coordinator.openCertificatesManager()
+            } label: {
+                countCard(
+                    title: Loc.string("dashboard.count.certs"),
+                    value: "\(viewModel.certificateCount)"
+                )
+            }
+            .accessibilityLabel("\(Loc.string("dashboard.count.certs")): \(viewModel.certificateCount)")
+            Button {
+                coordinator.openCertificatesManager()
+            } label: {
+                countCard(
+                    title: Loc.string("dashboard.count.profiles"),
+                    value: "\(viewModel.profileCount)"
+                )
+            }
+            .accessibilityLabel("\(Loc.string("dashboard.count.profiles")): \(viewModel.profileCount)")
+            Button {
+                coordinator.path.append(AppRoute.storage)
+            } label: {
+                countCard(
+                    title: Loc.string("dashboard.count.freeSpace"),
+                    value: freeSpaceText
+                )
+            }
+            .accessibilityLabel("\(Loc.string("dashboard.count.freeSpace")): \(freeSpaceText)")
+        }
+    }
+
+    private func countCard(title: String, value: String) -> some View {
+        VStack(spacing: DS.Spacing.xxs) {
+            Text(value)
+                .font(.title3)
+                .fontWeight(.semibold)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity)
+        .dsCard()
+    }
+
+    private var freeSpaceText: String {
+        guard let bytes = viewModel.freeSpaceBytes else { return Loc.string("common.unknown") }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    // MARK: - Recent activity
+
+    private var activitySection: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.md) {
+            Text(Loc.string("dashboard.recent"))
+                .dsSectionHeader()
+                .accessibilityLabel(Loc.string("dashboard.recent"))
+            if let activityError = viewModel.activityError {
+                Text(activityError)
+                    .foregroundStyle(.red)
+                    .font(.subheadline)
+                    .accessibilityLabel(activityError)
+            } else if viewModel.recentActivity.isEmpty {
+                Text(Loc.string("dashboard.recent.empty"))
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(Loc.string("dashboard.recent.empty"))
+                Text(Loc.string("dashboard.recent.empty.detail"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(viewModel.recentActivity) { entry in
+                    Button {
+                        coordinator.presentedSheet = .diagnostics
+                    } label: {
+                        HStack(spacing: DS.Spacing.md) {
+                            levelDot(entry.level)
+                            VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
+                                Text(entry.message)
+                                    .font(.subheadline)
+                                    .lineLimit(2)
+                                Text(entry.timestamp, style: .time)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .accessibilityLabel("\(levelText(entry.level)): \(entry.message)")
+                }
+            }
+        }
+        .dsCard()
+    }
+
+    private func levelDot(_ level: LogLevel) -> some View {
+        Circle()
+            .fill(levelColor(level))
+            .frame(width: 8, height: 8)
+            .accessibilityHidden(true)
+    }
+
+    private func levelColor(_ level: LogLevel) -> Color {
+        switch level {
+        case .debug: return .gray
+        case .info: return .blue
+        case .warning: return .orange
+        case .error, .critical: return .red
+        }
+    }
+
+    private func levelText(_ level: LogLevel) -> String {
+        switch level {
+        case .debug: return Loc.string("logs.level.debug")
+        case .info: return Loc.string("logs.level.info")
+        case .warning: return Loc.string("logs.level.warning")
+        case .error: return Loc.string("logs.level.error")
+        case .critical: return Loc.string("logs.level.critical")
         }
     }
 }

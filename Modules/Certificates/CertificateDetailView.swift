@@ -1,285 +1,361 @@
 import SwiftUI
 import CryptoKit
+import UniformTypeIdentifiers
 
-struct CertificateInfo: Equatable {
-    var subject = "", issuer = "", serial = "", fingerprint = "", status = "", expiry = ""
-    var isExpired = false
-    var compatibilityResult = ""
-}
-
-@MainActor
-final class CertificateDetailViewModel: ObservableObject {
-    @Published var info = CertificateInfo()
-    /// Genuinely async loading flag: true only while `load()` awaits
-    /// the engine / repository. The view shows a spinner until
-    /// `hasLoaded` flips, so no half-filled rows ever flash.
-    @Published var isLoading = false
-    @Published var hasLoaded = false
-    @Published var isTestingCompatibility = false
-    @Published var errorMessage: String?
-    let certificate: StoredCertificate
-
-    private let certificateEngine: CertificateEngineProtocol
-    private let certificateRepository: CertificateRepository
-    private let keychain: KeychainService
-
-    /// The engine / repository / keychain are injectable for tests;
-    /// by default the real engines are used (the repository is the
-    /// shared Core Data one, so records saved by the import flow
-    /// are visible here). The single-argument call used by the view
-    /// and by `CertificateParsingTests` keeps working.
-    init(
-        certificate: StoredCertificate,
-        certificateEngine: CertificateEngineProtocol? = nil,
-        certificateRepository: CertificateRepository? = nil,
-        keychain: KeychainService? = nil
-    ) {
-        self.certificate = certificate
-        self.certificateEngine = certificateEngine ?? CertificateEngine()
-        self.certificateRepository = certificateRepository ?? CoreDataCertificateRepository(persistence: .shared)
-        self.keychain = keychain ?? .shared
+/// Certificate / profile detail (contract §C.3). One view, two
+/// subjects: an identity (P12) or a provisioning profile. Shows the
+/// stored fields, the expiry countdown with its band colour, and —
+/// for profiles — the UDID coverage section and the re-import action.
+/// Delete names the failed step on failure and dismisses only when
+/// every step succeeds (W-6).
+struct CertificateDetailView: View {
+    enum Subject {
+        case certificate(CertificateModel)
+        case profile(ProvisioningModel)
     }
 
-    func load() async {
-        isLoading = true
-        defer {
-            isLoading = false
-            hasLoaded = true
-        }
-        info.subject = certificate.name
-        if certificate.kind == "mobileprovision" {
-            await loadProvision()
-        } else {
-            await loadP12()
-        }
+    private let subject: Subject
+    @EnvironmentObject private var coordinator: AppCoordinator
+    @Environment(\.dismiss) private var dismiss
+    @State private var showDeleteConfirm = false
+    @State private var showReimporter = false
+    @State private var errorMessage: String?
+    @State private var isDeleting = false
+
+    init(certificate: CertificateModel) {
+        self.subject = .certificate(certificate)
     }
 
-    /// P12 details come from the parsed certificate: the repository
-    /// record saved at import time (parsed by `CertificateEngine`,
-    /// which reads issuer / serial / fingerprint from the DER
-    /// bytes). A password-less P12 is parsed directly as a fallback;
-    /// a password-protected P12 without a record cannot be parsed
-    /// here — the password is never asked for on this screen — so
-    /// its fields stay blank and the status says only "Stored".
-    private func loadP12() async {
-        if let record = await storedRecord() {
-            applyRecord(record)
-            return
-        }
-        if let parsed = try? await certificateEngine.parseP12(at: certificate.url, password: "") {
-            applyRecord(parsed)
-            return
-        }
-        info.status = NSLocalizedString("cert.status.stored", comment: "")
+    init(profile: ProvisioningModel) {
+        self.subject = .profile(profile)
     }
 
-    private func applyRecord(_ record: CertificateModel) {
-        info.issuer = record.issuer ?? ""
-        info.serial = record.serialNumber ?? ""
-        info.fingerprint = record.fingerprint
-        info.expiry = record.expirationDate.map(Self.formatDate) ?? ""
-        info.isExpired = record.isExpired
-        info.status = record.isExpired
-            ? NSLocalizedString("cert.status.expired", comment: "")
-            : record.status == .valid
-                ? NSLocalizedString("cert.status.valid", comment: "")
-                : NSLocalizedString("cert.status.stored", comment: "")
-    }
-
-    /// Parses a .mobileprovision through the real engine path.
-    /// A profile is a CMS (PKCS#7) envelope wrapping an XML plist,
-    /// so raw `PropertyListSerialization` on the file bytes can never
-    /// read it. `ProvisioningEngine` (reached here via
-    /// `CertificateEngine.parseProvisioningProfile`) already strips
-    /// that envelope — it extracts the embedded `<?xml … </plist>`
-    /// document and decodes it — so this reuses that one
-    /// implementation instead of adding a second parser. (The
-    /// Security framework's `CMSDecoder` is macOS-only and is not
-    /// in the iOS SDK, so it cannot be the parser here.)
-    private func loadProvision() async {
-        do {
-            let profile = try await certificateEngine.parseProvisioningProfile(at: certificate.url)
-            info.status = profile.name
-            info.expiry = profile.expirationDate.map(Self.formatDate) ?? ""
-            info.isExpired = profile.isExpired
-            info.issuer = profile.teamName ?? profile.teamIdentifier
-            info.serial = profile.uuid
-            // Fingerprint of the first embedded developer certificate
-            // (SHA-256 of its DER bytes) — the same value
-            // `validatePair` compares against a certificate.
-            if let base64 = profile.certificates.first,
-               let der = Data(base64Encoded: base64) {
-                info.fingerprint = SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
+    var body: some View {
+        List {
+            detailSection
+            if case .profile(let profile) = subject {
+                coverageSection(profile: profile)
+                reimportSection
             }
-        } catch {
-            info.status = NSLocalizedString("cert.error.read", comment: "")
-            errorMessage = error.localizedDescription
+            deleteSection
+        }
+        .navigationTitle(title)
+        .dsInlineTitle()
+        .fileImporter(
+            isPresented: $showReimporter,
+            allowedContentTypes: [UTType(filenameExtension: "mobileprovision") ?? .data]
+        ) { result in
+            switch result {
+            case .success(let url):
+                Task { await reimport(url: url) }
+            case .failure(let error):
+                errorMessage = error.localizedDescription
+            }
+        }
+        .alert(Loc.string("common.delete.confirm"), isPresented: $showDeleteConfirm) {
+            Button(Loc.string("common.delete"), role: .destructive) {
+                Task { await delete() }
+            }
+            Button(Loc.string("common.cancel"), role: .cancel) {}
+        }
+        .alert(Loc.string("alert.error.title"), isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button(Loc.string("common.ok"), role: .cancel) { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
         }
     }
 
-    /// Real compatibility check: parse the item, check expiry, and
-    /// for a profile also check that a stored certificate matches
-    /// its team and is listed in it. The result now depends on the
-    /// actual data instead of the file extension.
-    func testCompatibility() async {
-        isTestingCompatibility = true
-        defer { isTestingCompatibility = false }
-        if certificate.kind == "mobileprovision" {
-            await testProvisionCompatibility()
-        } else {
-            await testP12Compatibility()
+    private var title: String {
+        switch subject {
+        case .certificate(let certificate): return certificate.name
+        case .profile(let profile): return profile.name
         }
     }
 
-    private func testP12Compatibility() async {
-        let record: CertificateModel?
-        if let stored = await storedRecord() {
-            record = stored
-        } else {
-            record = try? await certificateEngine.parseP12(at: certificate.url, password: "")
-        }
-        guard let record else {
-            info.compatibilityResult = NSLocalizedString("cert.compat.unverified", comment: "")
-            return
-        }
-        if record.isExpired {
-            info.compatibilityResult = NSLocalizedString("cert.compat.expired", comment: "")
-            return
-        }
-        info.compatibilityResult = NSLocalizedString("cert.compat.p12", comment: "")
-    }
+    // MARK: - Detail fields
 
-    private func testProvisionCompatibility() async {
-        let profile: ProvisioningModel
-        do {
-            profile = try await certificateEngine.parseProvisioningProfile(at: certificate.url)
-        } catch {
-            info.compatibilityResult = error.localizedDescription
-            return
-        }
-        if profile.isExpired {
-            info.compatibilityResult = NSLocalizedString("cert.compat.expired", comment: "")
-            return
-        }
-        let records = (try? await certificateRepository.fetchAll()) ?? []
-        if records.isEmpty {
-            info.compatibilityResult = NSLocalizedString("cert.compat.noCert", comment: "")
-            return
-        }
-        let profileFingerprints = Set(profile.certificates.compactMap { base64 -> String? in
-            guard let der = Data(base64Encoded: base64) else { return nil }
-            return SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
-        })
-        let matches = records.contains { record in
-            record.teamIdentifier == profile.teamIdentifier
-                && (profileFingerprints.isEmpty || profileFingerprints.contains(record.fingerprint.lowercased()))
-        }
-        info.compatibilityResult = matches
-            ? NSLocalizedString("cert.compat.provision", comment: "")
-            : NSLocalizedString("cert.compat.mismatch", comment: "")
-    }
-
-    /// Deletes the file AND the repository record with its Keychain
-    /// password, so a stale record can never make signing pick a
-    /// missing identity.
-    func delete() async {
-        try? FileManager.default.removeItem(at: certificate.url)
-        if let match = await storedRecord() {
-            try? await certificateRepository.delete(id: match.id)
-            if let account = match.keychainAccount {
-                try? keychain.delete(account: account)
+    @ViewBuilder
+    private var detailSection: some View {
+        switch subject {
+        case .certificate(let certificate):
+            Section {
+                row(Loc.string("cert.detail.subject"), certificate.commonName ?? certificate.name)
+                row(Loc.string("cert.detail.issuer"), certificate.issuer ?? "—")
+                row(Loc.string("cert.detail.serial"), certificate.serialNumber ?? "—")
+                row(Loc.string("cert.detail.fingerprint"), certificate.fingerprint)
+                row(Loc.string("certs.detail.team"), certificate.teamIdentifier ?? "—")
+                row(Loc.string("certs.detail.kind"), kindText(certificate.kind))
+                row(Loc.string("cert.detail.status"), statusText(certificate.status))
+                expiryRow(days: certificate.daysUntilExpiration, date: certificate.expirationDate)
+                row(Loc.string("certs.detail.filename"), certificate.p12FileName ?? "—")
+                row(Loc.string("certs.detail.keychain"), certificate.isStoredInKeychain
+                    ? Loc.string("certs.detail.keychain.stored")
+                    : Loc.string("certs.detail.keychain.none"))
+            } header: {
+                Text(Loc.string("cert.detail.title")).dsSectionHeader()
+            }
+        case .profile(let profile):
+            Section {
+                row(Loc.string("certs.detail.uuid"), profile.uuid)
+                row(Loc.string("certs.detail.team"), profile.teamIdentifier)
+                row(Loc.string("certs.detail.teamname"), profile.teamName ?? "—")
+                row(Loc.string("certs.detail.appid"), profile.appIdentifier)
+                row(Loc.string("certs.detail.bundleid"), profile.bundleIdentifier)
+                row(Loc.string("certs.detail.kind"), profileKindText(profile.kind))
+                expiryRow(days: profile.daysUntilExpiration, date: profile.expirationDate)
+                row(Loc.string("certs.detail.created"), profile.creationDate.map(Self.formatDate) ?? "—")
+                row(Loc.string("certs.detail.datahash"), profile.dataHash)
+                row(Loc.string("certs.detail.filename"), profile.fileURL?.lastPathComponent ?? "—")
+            } header: {
+                Text(Loc.string("cert.detail.title")).dsSectionHeader()
+            }
+            Section {
+                ForEach(profile.entitlements.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
+                    row(key, value)
+                }
+                if profile.entitlements.isEmpty {
+                    Text("—").foregroundStyle(.secondary)
+                }
+            } header: {
+                Text(Loc.string("certs.detail.entitlements")).dsSectionHeader()
+            }
+            Section {
+                row(Loc.string("certs.detail.devices"), "\(profile.provisionedDevices.count)")
+                ForEach(profile.provisionedDevices, id: \.self) { device in
+                    Text(device)
+                        .font(.caption.monospaced())
+                        .lineLimit(1)
+                }
+            } header: {
+                Text(Loc.string("certs.detail.devices")).dsSectionHeader()
+            }
+            Section {
+                ForEach(Self.embeddedFingerprints(profile), id: \.self) { fingerprint in
+                    Text(fingerprint)
+                        .font(.caption.monospaced())
+                        .lineLimit(1)
+                }
+                if profile.certificates.isEmpty {
+                    Text("—").foregroundStyle(.secondary)
+                }
+            } header: {
+                Text(Loc.string("certs.detail.certificates")).dsSectionHeader()
             }
         }
     }
 
-    /// The repository record for this file, if it was registered at
-    /// import time (the engine stores its model under the stored
-    /// file URL).
-    private func storedRecord() async -> CertificateModel? {
-        let records = (try? await certificateRepository.fetchAll()) ?? []
-        return records.first { $0.fileURL == certificate.url }
+    private func row(_ label: String, _ value: String) -> some View {
+        HStack(spacing: DS.Spacing.md) {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .lineLimit(2)
+                .multilineTextAlignment(.trailing)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label): \(value)")
+    }
+
+    private func expiryRow(days: Int?, date: Date?) -> some View {
+        HStack(spacing: DS.Spacing.md) {
+            Text(Loc.string("cert.detail.expiry"))
+                .foregroundStyle(.secondary)
+            Spacer()
+            VStack(alignment: .trailing, spacing: DS.Spacing.xxs) {
+                Text(date.map(Self.formatDate) ?? Loc.string("expiry.none"))
+                ExpiryPill(daysUntilExpiration: days)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(Loc.string("cert.detail.expiry")): \(DS.expiryText(days: days))")
+    }
+
+    // MARK: - Device coverage (profiles only, §C.3)
+
+    private func coverageSection(profile: ProvisioningModel) -> some View {
+        Section {
+            CoverageSectionView(profile: profile)
+        } header: {
+            Text(Loc.string("certs.detail.coverage")).dsSectionHeader()
+        }
+    }
+
+    private var reimportSection: some View {
+        Section {
+            Button(Loc.string("certs.detail.reimport")) {
+                showReimporter = true
+            }
+            .dsPrimaryButton()
+            .accessibilityLabel(Loc.string("certs.detail.reimport"))
+        }
+    }
+
+    private var deleteSection: some View {
+        Section {
+            Button(Loc.string("common.delete"), role: .destructive) {
+                showDeleteConfirm = true
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .disabled(isDeleting)
+            .accessibilityIdentifier("certDetail.delete")
+            .accessibilityLabel(Loc.string("common.delete"))
+            if isDeleting {
+                ProgressView(Loc.string("common.loading"))
+            }
+        }
+    }
+
+    // MARK: - Actions
+
+    private func delete() async {
+        isDeleting = true
+        defer { isDeleting = false }
+        let ok: Bool
+        switch subject {
+        case .certificate(let certificate):
+            ok = await coordinator.certificatesViewModel.deleteCertificate(id: certificate.id)
+        case .profile(let profile):
+            ok = await coordinator.certificatesViewModel.deleteProfile(id: profile.id)
+        }
+        if ok {
+            dismiss()
+        } else {
+            errorMessage = coordinator.certificatesViewModel.errorMessage
+        }
+    }
+
+    /// Re-import (§B.11): the new profile is validated immediately
+    /// by the use case (CMS valid? already expired?); any failure
+    /// stops the flow with the specific message. On success the
+    /// detail dismisses back to the manager, which shows the new
+    /// profile.
+    private func reimport(url: URL) async {
+        let ok = await coordinator.certificatesViewModel.importProfile(url: url)
+        if ok {
+            dismiss()
+        } else {
+            errorMessage = coordinator.certificatesViewModel.errorMessage
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func kindText(_ kind: CertificateKind) -> String {
+        switch kind {
+        case .development, .developer: return Loc.string("cert.kind.development")
+        case .distribution: return Loc.string("cert.kind.distribution")
+        case .adhoc: return Loc.string("cert.kind.adhoc")
+        case .unknown: return Loc.string("cert.kind.unknown")
+        }
+    }
+
+    private func profileKindText(_ kind: ProvisioningKind) -> String {
+        switch kind {
+        case .development: return Loc.string("profile.kind.development")
+        case .adhoc: return Loc.string("profile.kind.adhoc")
+        case .appStore: return Loc.string("profile.kind.appStore")
+        case .enterprise: return Loc.string("profile.kind.enterprise")
+        case .unknown: return Loc.string("profile.kind.unknown")
+        }
+    }
+
+    private func statusText(_ status: CertificateStatus) -> String {
+        switch status {
+        case .valid: return Loc.string("cert.status.valid")
+        case .expired: return Loc.string("cert.status.expired")
+        case .revoked: return Loc.string("cert.status.revoked")
+        case .invalid: return Loc.string("cert.status.invalid")
+        case .mismatched: return Loc.string("cert.status.mismatched")
+        case .unknown: return Loc.string("cert.status.unknown")
+        }
     }
 
     private static func formatDate(_ date: Date) -> String {
         DateFormatter.localizedString(from: date, dateStyle: .medium, timeStyle: .none)
     }
+
+    /// SHA-256 fingerprints of the profile's embedded developer
+    /// certificates — the same values `validatePair` compares
+    /// against a certificate's fingerprint.
+    private static func embeddedFingerprints(_ profile: ProvisioningModel) -> [String] {
+        profile.certificates.compactMap { base64 -> String? in
+            guard let der = Data(base64Encoded: base64) else { return nil }
+            return SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
+        }
+    }
 }
 
-struct CertificateDetailView: View {
-    let certificate: StoredCertificate
-    var onDeleted: () -> Void
-    @StateObject private var viewModel: CertificateDetailViewModel
-    @State private var showDeleteConfirm = false
-    @Environment(\.dismiss) private var dismiss
-
-    init(certificate: StoredCertificate, onDeleted: @escaping () -> Void) {
-        self.certificate = certificate
-        self.onDeleted = onDeleted
-        _viewModel = StateObject(wrappedValue: CertificateDetailViewModel(certificate: certificate))
-    }
+/// Device coverage for one profile (§C.3): pasted-UDID field (40-hex
+/// validation with the exact error message) + "Check coverage" →
+/// covered / not covered for THIS profile (exact `contains`). App
+/// Store profiles show "no device list" text, not a fake `true`. No
+/// UDID pasted → the prompt, not an error.
+private struct CoverageSectionView: View {
+    let profile: ProvisioningModel
+    @StateObject private var udidStore = DeviceUDIDStore()
+    @State private var draftUDID = ""
+    @State private var coverageResult: String?
+    @State private var coverageError: String?
 
     var body: some View {
-        Group {
-            if !viewModel.hasLoaded {
-                ProgressView(NSLocalizedString("common.loading", comment: ""))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    Section {
-                        row(NSLocalizedString("cert.detail.subject", comment: ""), viewModel.info.subject)
-                        row(NSLocalizedString("cert.detail.issuer", comment: ""), viewModel.info.issuer.isEmpty ? "—" : viewModel.info.issuer)
-                        row(NSLocalizedString("cert.detail.serial", comment: ""), viewModel.info.serial.isEmpty ? "—" : viewModel.info.serial)
-                        row(NSLocalizedString("cert.detail.fingerprint", comment: ""), viewModel.info.fingerprint.isEmpty ? "—" : viewModel.info.fingerprint)
-                        row(NSLocalizedString("cert.detail.expiry", comment: ""), viewModel.info.expiry.isEmpty ? "—" : viewModel.info.expiry)
-                        HStack {
-                            Text(NSLocalizedString("cert.detail.status", comment: ""))
-                            Spacer()
-                            Text(viewModel.info.status)
-                                .foregroundStyle(viewModel.info.isExpired ? .red : .green)
-                        }
-                    } header: {
-                        Text(NSLocalizedString("cert.detail.title", comment: "")).dsSectionHeader()
-                    }
-                    Section {
-                        Button(NSLocalizedString("cert.compat.run", comment: "")) {
-                            Task { await viewModel.testCompatibility() }
-                        }
-                        .dsPrimaryButton()
-                        .disabled(viewModel.isTestingCompatibility)
-                        .accessibilityIdentifier("certDetail.compatibility")
-                        if viewModel.isTestingCompatibility {
-                            ProgressView(NSLocalizedString("common.loading", comment: ""))
-                        }
-                        if !viewModel.info.compatibilityResult.isEmpty {
-                            Text(viewModel.info.compatibilityResult).font(.caption)
-                        }
-                    } header: {
-                        Text(NSLocalizedString("cert.compat.title", comment: "")).dsSectionHeader()
-                    }
-                    Section {
-                        Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) { showDeleteConfirm = true }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.red)
-                            .accessibilityIdentifier("certDetail.delete")
-                    }
-                }
+        if profile.kind == .appStore {
+            Text(Loc.string("certs.coverage.noList"))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(Loc.string("certs.coverage.noList"))
+        } else {
+            TextField(Loc.string("udid.placeholder"), text: $draftUDID)
+                .textContentType(.none)
+                .autocapitalization(.allCharacters)
+                .disableAutocorrection(true)
+                .font(.caption.monospaced())
+                .accessibilityLabel(Loc.string("udid.field"))
+                .onAppear { draftUDID = udidStore.savedUDID ?? "" }
+            Button(Loc.string("certs.coverage.check")) {
+                checkCoverage()
+            }
+            .dsSecondaryButton()
+            .accessibilityLabel(Loc.string("certs.coverage.check"))
+            if let coverageResult {
+                Text(coverageResult)
+                    .font(.subheadline)
+                    .accessibilityLabel(coverageResult)
+            }
+            if let coverageError {
+                Text(coverageError)
+                    .font(.subheadline)
+                    .foregroundStyle(.red)
+                    .accessibilityLabel(coverageError)
+            }
+            if coverageResult == nil && coverageError == nil {
+                Text(Loc.string("certs.coverage.prompt"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(Loc.string("certs.coverage.prompt"))
             }
         }
-        .navigationTitle(certificate.name)
-        .dsInlineTitle()
-        .onAppear { Task { await viewModel.load() } }
-        .alert(NSLocalizedString("common.delete.confirm", comment: ""), isPresented: $showDeleteConfirm) {
-            Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) {
-                Task { await viewModel.delete(); onDeleted(); dismiss() }
-            }
-            Button(NSLocalizedString("common.cancel", comment: ""), role: .cancel) {}
-        }
-        .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: Binding(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil } })) {
-            Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) { viewModel.errorMessage = nil }
-        } message: { Text(viewModel.errorMessage ?? "") }
     }
 
-    private func row(_ label: String, _ value: String) -> some View {
-        HStack(spacing: DS.Spacing.md) { Text(label).foregroundStyle(.secondary); Spacer(); Text(value).lineLimit(2) }
+    private func checkCoverage() {
+        coverageResult = nil
+        coverageError = nil
+        do {
+            try DeviceUDIDValidator.validate(draftUDID)
+            guard let normalized = DeviceUDIDValidator.normalized(draftUDID) else {
+                throw AppError.validation(.invalidDeviceUDID(draftUDID))
+            }
+            _ = try udidStore.save(draftUDID)
+            let covered = profile.provisionedDevices.contains(normalized)
+            coverageResult = covered
+                ? Loc.string("certs.coverage.covered")
+                : Loc.string("certs.coverage.notCovered")
+        } catch {
+            coverageError = error.localizedDescription
+        }
     }
 }
