@@ -49,44 +49,6 @@ resolved versions here after the first macOS build.
   signing in `openssl.cpp` uses full OpenSSL 3.x APIs that Apple's
   Security framework cannot replace on iOS (SecCMS is macOS-only).
 
-## Apple refresh core (Rust, isideload 0.5.2)
-
-- **isideload** — Repository: https://github.com/nab138/isideload, **MIT,
-  Copyright (c) 2025 nab138**. Pinned by git rev
-  `326e56229d0727cb6e7b34c8cf03e37e2cd3e17d` (the 0.5.2 release commit,
-  2026-10-28) in `RustCore/apple_refresh/Cargo.toml`, with features
-  `install` + `tokio-mt` (NOT `keyring-storage`); transitive versions
-  pinned by the committed `Cargo.lock`. Used as a library only — no
-  isideload code is vendored or modified. Our crate
-  (`RustCore/apple_refresh/src/`) is our own code on top of isideload's
-  public API, plus a small reimplementation of the apptokens request
-  using only public fields, so a different client-info claim can be
-  used for that one call (see `Documentation/Phase1-FFI-Design.md`
-  §1/§5). The C interface is our own
-  `RustCore/apple_refresh/include/AppleRefreshBridge.h`.
-- **idevice** (transitive, via isideload's `install` feature) — MIT.
-  Required because isideload 0.5.2 uses it unconditionally; unused by
-  the Phase 1 sign-in flow.
-- **ring** (transitive, via rustls / rcgen / idevice) — ISC-style
-  "ring" licence (see the `ring` crate's LICENCE file). The one native
-  C + assembly dependency in the tree; it has an explicit Apple-ABI
-  `ios64` target.
-- **apple-codesign-quick** (transitive, via isideload) — **LGPL-2.1**
-  (Dadoum/apple-crates). Statically linked into the Rust core but
-  **not used** by Phase 1 (zsign is our signer); it is only compiled
-  because isideload depends on it. Flagged for licence review in the
-  design doc (§2 #31): if LGPL-2.1 static linking ever objects, the
-  dependency can only be removed by patching isideload.
-- Content-Type note (design doc §9 Q1): isideload hardcodes
-  `text/x-xml-plist`; the Apparition finding says Apple blocks that
-  value on `gsd.apple.com` (403) and `text/xml` works on both hosts.
-  No fork patch is applied in Phase 1: the sign-in path keeps
-  isideload's value, and our own apptokens-override path accepts a
-  `content_type` config switch (default `text/x-xml-plist`) so the
-  on-device spike can test `text/xml` without a fork. If the spike
-  proves `text/xml` is required for sign-in, the fix is a one-line
-  fork patch to isideload (MIT — allowed), recorded here at that time.
-
 ## References only (no code, no assets copied)
 
 | Project | Licence | Note |
