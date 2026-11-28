@@ -139,7 +139,7 @@ pub unsafe extern "C" fn apple_refresh_login(
         // SessionInner::login and zeroed on return; this local copy
         // is dropped (and its bytes freed) when this closure ends.
         let password_s = unsafe { ffi::read_str(password, "login", "password")? };
-        s.inner.login(&email_s, &password_s)
+        s.inner.clone().login(&email_s, &password_s)
     })
 }
 

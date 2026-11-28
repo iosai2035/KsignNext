@@ -53,6 +53,11 @@ public final class AppleIDSignInUseCase: @unchecked Sendable {
     private let store: AppleIDSessionStore
     private let servers: AnisetteServerProvider
     private let clientFactory: @Sendable () -> any AppleRefreshClientProtocol
+    /// Visible app log: every attempt failure is logged here (with
+    /// the real underlying error, e.g. Apple's ec/em) so the next
+    /// live sign-in failure can be diagnosed from Logs instead of a
+    /// bare spinner — the 2FA diagnosis (deep dive Pass 1, 2FA-1).
+    private let logs: LogsManager
     private let lock = NSLock()
     private var currentClient: (any AppleRefreshClientProtocol)?
     private var _signedInClient: (any AppleRefreshClientProtocol)?
@@ -68,10 +73,12 @@ public final class AppleIDSignInUseCase: @unchecked Sendable {
 
     public init(store: AppleIDSessionStore = AppleIDSessionStore(),
                 servers: AnisetteServerProvider = AnisetteServerProvider(),
-                clientFactory: @escaping @Sendable () -> any AppleRefreshClientProtocol = { AppleRefreshClient() }) {
+                clientFactory: @escaping @Sendable () -> any AppleRefreshClientProtocol = { AppleRefreshClient() },
+                logs: LogsManager = .shared) {
         self.store = store
         self.servers = servers
         self.clientFactory = clientFactory
+        self.logs = logs
     }
 
     // MARK: - State
@@ -122,10 +129,16 @@ public final class AppleIDSignInUseCase: @unchecked Sendable {
     ///     its progress (attempt N of M, claim, server). Nil by
     ///     default; the sign-in screen wires it to a status line so
     ///     the user always sees what the app is trying.
+    ///   - onAttemptError: called with the real error of every failed
+    ///     attempt, before the retry decision. Nil by default; the
+    ///     sign-in screen wires it to the same status line so a
+    ///     failure is visible live instead of only after all
+    ///     attempts fail (2FA-1 diagnostic).
     public func signIn(email: String, password: String,
                        claimOverride: AppleRefreshClaim? = nil,
                        twoFactorHandler: @escaping @Sendable (TwoFactorPrompt) async -> TwoFactorResponse,
-                       onAttempt: (@Sendable (SignInAttemptProgress) -> Void)? = nil) async throws -> AppleIDSession {
+                       onAttempt: (@Sendable (SignInAttemptProgress) -> Void)? = nil,
+                       onAttemptError: (@Sendable (AppleRefreshError) -> Void)? = nil) async throws -> AppleIDSession {
         let email = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !email.isEmpty, email.contains("@"), email.contains(".") else {
             throw AppleRefreshError.invalidArgument(reason: "Enter a valid Apple ID email address.")
@@ -201,6 +214,14 @@ public final class AppleIDSignInUseCase: @unchecked Sendable {
                     client.close()
                     clearCurrentClient(client)
                     lastError = error
+                    // Diagnostic (2FA-1): surface the real failure
+                    // live — in the visible log and on the sign-in
+                    // screen via onAttemptError — instead of silently
+                    // retrying the next claim/server. The final throw
+                    // below already surfaces the last error; this is
+                    // what makes each earlier failure visible too.
+                    await logs.error("Sign-in attempt \(attemptNumber)/\(totalAttempts) failed (\(claim.presetName) @ \(URL(string: server)?.host ?? server)): \(error.localizedDescription)")
+                    onAttemptError?(error)
                     switch error {
                     case .wrongPassword:
                         // Never retry a rejected password on another

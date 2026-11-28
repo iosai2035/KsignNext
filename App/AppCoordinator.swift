@@ -52,6 +52,17 @@ final class AppCoordinator: ObservableObject {
     @Published var pendingFileOpen: IncomingFile?
     @Published var showDeepLinkError = false
     @Published var deepLinkError: String?
+    /// Inbox copy of an incoming .p12 awaiting its password (W-1).
+    /// CertificatesView bridges this into its view model and opens
+    /// the password sheet. It points at the Inbox copy, never at the
+    /// Certificates/ copy: `importFile` deletes its destination
+    /// before copying, so pointing it at the moved file would delete
+    /// the file and then fail to copy it.
+    @Published var pendingP12ImportURL: URL?
+    /// Bumped whenever the coordinator drops a file into
+    /// Certificates/ (W-1), so CertificatesView refreshes even when
+    /// already on that tab.
+    @Published var certificatesChangedToken = UUID()
 
     /// Loads the Core Data stores once at launch. A failure is shown in
     /// the existing error alert instead of crashing.
@@ -138,21 +149,119 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
-    /// Copies the incoming file into the app workspace (Documents/Inbox) and clears the sheet.
+    /// Copies the incoming file into the app workspace (Documents/Inbox),
+    /// then routes it by extension (W-1): .ipa through the import use
+    /// case, .p12 into Certificates/ with the password sheet, and
+    /// .mobileprovision into Certificates/ with a refresh. Failures are
+    /// surfaced in the existing error alert instead of silently
+    /// dropping the file; the sheet is cleared in all cases.
     func importIncomingFile(_ item: IncomingFile) {
         let fm = FileManager.default
-        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            deepLinkError = NSLocalizedString("error.documents.unavailable", comment: "")
+            showDeepLinkError = true
+            pendingFileOpen = nil
+            return
+        }
         let inbox = docs.appendingPathComponent("Inbox", isDirectory: true)
-        try? fm.createDirectory(at: inbox, withIntermediateDirectories: true)
-        let dest = inbox.appendingPathComponent(item.fileName)
-        if fm.fileExists(atPath: dest.path) { try? fm.removeItem(at: dest) }
         do {
+            try fm.createDirectory(at: inbox, withIntermediateDirectories: true)
+        } catch {
+            deepLinkError = error.localizedDescription
+            showDeepLinkError = true
+            pendingFileOpen = nil
+            return
+        }
+        let dest = inbox.appendingPathComponent(item.fileName)
+        do {
+            if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
             try fm.copyItem(at: item.url, to: dest)
         } catch {
             deepLinkError = error.localizedDescription
             showDeepLinkError = true
+            pendingFileOpen = nil
+            return
         }
         pendingFileOpen = nil
+        switch item.url.pathExtension.lowercased() {
+        case "ipa":
+            Task { await importIncomingIPA(dest) }
+        case "p12":
+            importIncomingP12(dest)
+        case "mobileprovision":
+            importIncomingProvision(dest)
+        default:
+            break
+        }
+    }
+
+    /// Validates the IPA and records it, then copies it into
+    /// Documents/ImportedApps, where the app list and the Signing
+    /// Center look for apps (mirrors ApplicationsViewModel.importIPA).
+    /// The list refreshes when the Applications tab appears.
+    private func importIncomingIPA(_ url: URL) async {
+        do {
+            _ = try await container.makeImportIPAUseCase().execute(url: url)
+            guard let destDir = Workspace.folder("ImportedApps") else {
+                deepLinkError = NSLocalizedString("error.documents.unavailable", comment: "")
+                showDeepLinkError = true
+                return
+            }
+            let dest = destDir.appendingPathComponent(url.lastPathComponent)
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try FileManager.default.copyItem(at: url, to: dest)
+        } catch {
+            deepLinkError = error.localizedDescription
+            showDeepLinkError = true
+        }
+    }
+
+    /// Copies the .p12 into Certificates/ (so it is visible in the
+    /// list) and publishes the Inbox copy for the password sheet:
+    /// the sheet's `importFile` copies from that URL into
+    /// Certificates/ and registers the certificate with its password.
+    private func importIncomingP12(_ url: URL) {
+        guard let certsDir = Workspace.folder("Certificates") else {
+            deepLinkError = NSLocalizedString("certs.error.storage", comment: "")
+            showDeepLinkError = true
+            return
+        }
+        let dest = certsDir.appendingPathComponent(url.lastPathComponent)
+        do {
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try FileManager.default.copyItem(at: url, to: dest)
+        } catch {
+            deepLinkError = error.localizedDescription
+            showDeepLinkError = true
+            return
+        }
+        certificatesChangedToken = UUID()
+        pendingP12ImportURL = url
+    }
+
+    /// Copies the profile into Certificates/ and refreshes the list.
+    private func importIncomingProvision(_ url: URL) {
+        guard let certsDir = Workspace.folder("Certificates") else {
+            deepLinkError = NSLocalizedString("certs.error.storage", comment: "")
+            showDeepLinkError = true
+            return
+        }
+        let dest = certsDir.appendingPathComponent(url.lastPathComponent)
+        do {
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try FileManager.default.copyItem(at: url, to: dest)
+        } catch {
+            deepLinkError = error.localizedDescription
+            showDeepLinkError = true
+            return
+        }
+        certificatesChangedToken = UUID()
     }
 
     func selectTab(_ tab: AppTab) { selectedTab = tab }
