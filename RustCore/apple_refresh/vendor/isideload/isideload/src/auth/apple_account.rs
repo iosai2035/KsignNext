@@ -281,7 +281,15 @@ impl AppleAccount {
                     }
                 }
                 LoginState::NeedsSMS2FA(id) => {
-                    self.update_trusted_numbers().await;
+                    // Ksign Next patch (see PATCHES.md, extension to
+                    // Patch 1): bounded like the NeedsDevice2FA arm —
+                    // the numbers only feed the SMS picker, and a slow
+                    // lookup must never stall the code field.
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(15),
+                        self.update_trusted_numbers(),
+                    )
+                    .await;
                     info!("SMS 2FA required");
                     self.login_state = self
                         .send_sms_2fa(id)
@@ -925,7 +933,17 @@ impl AppleAccount {
                 Some(200) => {}
                 Some(409) => {
                     info!("2FA code already sent");
-                    self.update_trusted_numbers().await;
+                    // Ksign Next patch (see PATCHES.md, extension to
+                    // Patch 1): bounded like the NeedsDevice2FA arm —
+                    // this is the path Apple takes when the code was
+                    // already pushed to the trusted device, so a slow
+                    // numbers lookup here stalled the code field
+                    // exactly like the stock bug did.
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(15),
+                        self.update_trusted_numbers(),
+                    )
+                    .await;
                     return Ok(LoginState::NeedsDevice2FAVerification);
                 }
                 Some(code) => {

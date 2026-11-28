@@ -25,7 +25,7 @@ import Foundation
 // MARK: - Source model
 
 /// Health of a user-added source.
-public enum SourceStatus: String, Codable, Sendable, Equatable {
+public enum SourceStatus: String, Codable, Sendable, Equatable, Hashable {
     case active
     case unreachable
     case invalid

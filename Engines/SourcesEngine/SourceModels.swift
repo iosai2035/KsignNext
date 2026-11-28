@@ -242,7 +242,7 @@ public struct AltSourceApp: Codable, Sendable, Equatable {
     public let developerName: String
     public let subtitle: String?
     public let localizedDescription: String?
-    public let iconURL: URL
+    public let iconURL: URL?
     public let tintColor: String?
     public let category: String?
     public let versions: [AltSourceVersion]
@@ -267,7 +267,7 @@ public struct AltSourceApp: Codable, Sendable, Equatable {
         developerName: String,
         subtitle: String? = nil,
         localizedDescription: String? = nil,
-        iconURL: URL,
+        iconURL: URL? = nil,
         tintColor: String? = nil,
         category: String? = nil,
         versions: [AltSourceVersion],
@@ -292,7 +292,9 @@ public struct AltSourceApp: Codable, Sendable, Equatable {
         developerName = try container.decode(String.self, forKey: .developerName)
         subtitle = try container.decodeIfPresent(String.self, forKey: .subtitle)
         localizedDescription = try container.decodeIfPresent(String.self, forKey: .localizedDescription)
-        iconURL = try container.decode(URL.self, forKey: .iconURL)
+        // Tolerant: the icon is display metadata — a missing or
+        // malformed URL must not drop the whole app from the list.
+        iconURL = container.decodeTolerant(URL.self, forKey: .iconURL)
         tintColor = try container.decodeIfPresent(String.self, forKey: .tintColor)
         category = try container.decodeIfPresent(String.self, forKey: .category)
         // Lossy: one bad version must not drop the app — the other

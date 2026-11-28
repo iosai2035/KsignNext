@@ -32,6 +32,29 @@ Patched behaviour:
    15-second `tokio::time::timeout`. The trusted numbers only feed
    the SMS picker; a slow lookup must never delay the code field.
 
+## Patch 1 extension — the same bound on the other two lookups
+
+Found by a Gemini audit of the sign-in path (2026-11-28) and
+verified against this file: Patch 1 bounded the lookup in the
+`NeedsDevice2FA` arm, but two other `update_trusted_numbers()`
+calls stayed unbounded, and one of them is the exact path Apple
+takes when the code was already pushed:
+
+1. `login_inner`, second step, `hsc == 409` ("2FA code already
+   sent"): the stock code awaited the numbers lookup with no
+   timeout before returning `NeedsDevice2FAVerification`. A slow
+   `GET https://gsa.apple.com/auth` there meant the 2FA callback
+   never fired and the app spun until Swift's 120 s timeout, then
+   silently retried the next claim — the live symptom on the
+   user's phone. Now bounded by the same 15-second timeout.
+2. `login_impl`, `LoginState::NeedsSMS2FA` arm: same bound, for
+   the same reason (the numbers only feed the SMS picker).
+
+The poll contract itself (`poll_prompt` returning
+`{"pending": true, "prompt": ...}`) was verified correct and
+needed no change, and the `"devices"` callback action was already
+handled by the Rust session layer.
+
 ## Re-vendoring
 
 To update to a newer isideload commit: replace this directory with
