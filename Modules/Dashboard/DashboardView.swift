@@ -14,7 +14,7 @@ struct ActivityItem: Identifiable, Equatable {
 protocol DashboardDataProviding {
     func loadCounts() -> DashboardCounts
     func loadRecentActivity() -> [ActivityItem]
-    func expiringCertificates() -> [ExpiringItem]
+    func expiringCertificates() async -> [ExpiringItem]
 }
 
 /// One expiring certificate: its display name and expiry date. The
@@ -81,21 +81,26 @@ final class LocalDashboardDataProvider: DashboardDataProviding {
 
     /// Provisioning profiles in the Certificates folder whose parsed
     /// `ExpirationDate` falls within the next 7 days (already-expired
-    /// ones included — they need action too). Only plain-plist
-    /// profiles can be read here; CMS-wrapped profiles report no
-    /// date, and .p12 expiry comes from the certificate repository
-    /// (see `DashboardViewModel.refresh()`).
-    func expiringCertificates() -> [ExpiringItem] {
+    /// ones included — they need action too). Each profile is parsed
+    /// with `ProvisioningEngine.parseProvisioningProfile(at:)` — the
+    /// one CMS-stripping implementation — because a .mobileprovision
+    /// is a CMS-signed blob, not a bare plist: raw
+    /// PropertyListSerialization on it can never succeed, so the old
+    /// scan reported no profile expiry at all (W-2). A profile that
+    /// fails to parse is skipped, not fatal: one bad file must not
+    /// hide the others. .p12 expiry still comes from the certificate
+    /// repository (see `DashboardViewModel.refresh()`).
+    func expiringCertificates() async -> [ExpiringItem] {
         guard let dir = Workspace.folder("Certificates") else { return [] }
         let items = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         let limit = Calendar.current.date(byAdding: .day, value: 7, to: Date()) ?? Date()
+        let engine = ProvisioningEngine()
         var found: [(name: String, date: Date)] = []
         for url in items where url.pathExtension.lowercased() == "mobileprovision" {
-            guard let data = try? Data(contentsOf: url),
-                  let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-                  let expiry = plist["ExpirationDate"] as? Date,
+            guard let model = try? await engine.parseProvisioningProfile(at: url),
+                  let expiry = model.expirationDate,
                   expiry <= limit else { continue }
-            found.append((url.deletingPathExtension().lastPathComponent, expiry))
+            found.append((model.name, expiry))
         }
         return found.sorted { $0.date < $1.date }.map { ExpiringItem(name: $0.name, date: $0.date) }
     }
@@ -129,7 +134,7 @@ final class DashboardViewModel: ObservableObject {
         errorMessage = nil
         counts = provider.loadCounts()
         recentActivity = provider.loadRecentActivity()
-        var expiring = provider.expiringCertificates()
+        var expiring = await provider.expiringCertificates()
         if let repository = certificateRepository,
            let models = try? await repository.fetchAll() {
             let limit = Calendar.current.date(byAdding: .day, value: 7, to: Date()) ?? Date()

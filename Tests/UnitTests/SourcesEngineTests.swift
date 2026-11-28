@@ -276,4 +276,102 @@ final class SourcesEngineTests: XCTestCase {
         XCTAssertNil(source.apps.first { $0.name == "Bad Icon" }?.iconURL)
         XCTAssertNil(source.apps.first { $0.name == "No Icon" }?.iconURL)
     }
+
+    /// Non-AltStore wire shapes must decode (deep dive Pass 2,
+    /// SRC-2): date-only, space-separated and epoch dates; Double,
+    /// digits-string and missing sizes. An unparseable size such as
+    /// "12.5MB" degrades to 0 rather than a wrong unit.
+    func testNonAltStoreVersionShapesDecode() throws {
+        let json = """
+        {
+          "name": "Test",
+          "identifier": "com.example.test",
+          "apps": [
+            {
+              "name": "Odd Shapes",
+              "bundleIdentifier": "com.example.odd",
+              "developerName": "Example",
+              "versions": [
+                {
+                  "version": "1.0",
+                  "date": "2024-01-15",
+                  "downloadURL": "https://example.com/odd-1.0.ipa",
+                  "size": 100
+                },
+                {
+                  "version": "1.1",
+                  "date": "2024-01-15 10:30:00",
+                  "downloadURL": "https://example.com/odd-1.1.ipa",
+                  "size": 123.45
+                },
+                {
+                  "version": "1.2",
+                  "date": 1705400000,
+                  "downloadURL": "https://example.com/odd-1.2.ipa",
+                  "size": "12345"
+                },
+                {
+                  "version": "1.3",
+                  "date": "1705320600",
+                  "downloadURL": "https://example.com/odd-1.3.ipa",
+                  "size": "12.5MB"
+                },
+                {
+                  "version": "1.4",
+                  "date": "2024-01-15T10:30:00Z",
+                  "downloadURL": "https://example.com/odd-1.4.ipa"
+                }
+              ]
+            }
+          ]
+        }
+        """
+        let source = try JSONDecoder().decode(AltSource.self, from: Data(json.utf8))
+        let app = try XCTUnwrap(source.apps.first { $0.name == "Odd Shapes" })
+        XCTAssertEqual(app.versions.count, 5)
+        XCTAssertEqual(app.versions.map(\.size), [100, 123, 12345, 0, 0])
+        let expectedDayStart = ISO8601DateFormatter().date(from: "2024-01-15T00:00:00Z")
+        XCTAssertEqual(app.versions.first { $0.version == "1.0" }?.date, expectedDayStart)
+        XCTAssertEqual(app.latestVersion?.version, "1.2")
+    }
+
+    /// A genuinely unparseable date still drops the version (the
+    /// existing testBadVersionDroppedNotApp behavior is preserved);
+    /// tolerance is for unusual-but-valid shapes, not garbage.
+    func testUnparseableDateStillDropsVersion() throws {
+        let json = """
+        {
+          "name": "Test",
+          "identifier": "com.example.test",
+          "apps": [
+            {
+              "name": "Bad Date",
+              "bundleIdentifier": "com.example.baddate",
+              "developerName": "Example",
+              "versions": [
+                {
+                  "version": "1.0",
+                  "date": "not-a-date",
+                  "downloadURL": "https://example.com/bad.ipa",
+                  "size": 100
+                },
+                {
+                  "version": "1.1",
+                  "date": "2024-01-15T10:30:00Z",
+                  "downloadURL": "https://example.com/missing.ipa",
+                  "size": 100
+                }
+              ]
+            }
+          ]
+        }
+        """
+        let source = try JSONDecoder().decode(AltSource.self, from: Data(json.utf8))
+        let app = try XCTUnwrap(source.apps.first { $0.name == "Bad Date" })
+        // Only the ISO-dated version survives; the "not-a-date"
+        // version is dropped (it is the second entry in the JSON,
+        // so the surviving one is the 1.1 version).
+        XCTAssertEqual(app.versions.count, 1)
+        XCTAssertEqual(app.versions.first?.version, "1.1")
+    }
 }

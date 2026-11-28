@@ -5,7 +5,14 @@ struct SourceListingApp: Identifiable, Equatable {
     var name: String
     var bundleID: String
     var version: String
-    var downloadURLString: String
+    /// Nil when the app lists no decodable version (SRC-1): the app
+    /// is still listed, with a placeholder version and no Download.
+    var downloadURLString: String?
+    /// The source's own icon (SRC-3): shown as the row image.
+    var iconURL: URL?
+    var localizedDescription: String?
+    var size: Int64?
+    var date: Date?
 }
 
 struct SourceItem: Identifiable, Equatable, Codable, Hashable {
@@ -232,13 +239,20 @@ final class SourcesViewModel: ObservableObject {
             let engineID = try await ensureRegistered(source)
             let apps = try await engine.apps(for: engineID)
             errorMessage = nil
-            return apps.compactMap { app in
-                guard let latest = SourcesEngine.latestVersion(for: app) else { return nil }
+            return apps.map { app in
+                // SRC-1: never drop a version-less app — list it with
+                // a placeholder version and no download URL, so the
+                // list and the row count can never disagree.
+                let latest = SourcesEngine.latestVersion(for: app)
                 return SourceListingApp(
                     name: app.name,
                     bundleID: app.bundleIdentifier,
-                    version: latest.version,
-                    downloadURLString: latest.downloadURL.absoluteString
+                    version: latest?.version ?? NSLocalizedString("sources.app.version.unknown", comment: ""),
+                    downloadURLString: latest?.downloadURL.absoluteString,
+                    iconURL: app.iconURL,
+                    localizedDescription: app.localizedDescription ?? app.subtitle,
+                    size: latest?.size,
+                    date: latest?.date
                 )
             }
         } catch {

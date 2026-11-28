@@ -32,11 +32,43 @@ public enum AltSourceDateParsing {
         return formatter
     }()
 
+    /// Date-only (`yyyy-MM-dd`) fallback for sources that do not
+    /// emit a full timestamp (deep dive Pass 2, SRC-2).
+    private static let dateOnlyFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    /// Space-separated (`yyyy-MM-dd HH:mm:ss`) fallback.
+    private static let spaceSeparatedFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter
+    }()
+
     public static func date(from string: String) -> Date? {
         for formatter in formatters {
             if let date = formatter.date(from: string) {
                 return date
             }
+        }
+        // Fallbacks for non-AltStore wire shapes (deep dive Pass 2,
+        // SRC-2): date-only, space-separated, Unix epoch seconds.
+        // The epoch branch only accepts long digit strings (9+
+        // digits), so a bare year such as "2024" is not misread as
+        // 2024 seconds after 1970.
+        if let date = dateOnlyFormatter.date(from: string) { return date }
+        if let date = spaceSeparatedFormatter.date(from: string) { return date }
+        let trimmed = string.trimmingCharacters(in: .whitespaces)
+        if trimmed.count >= 9,
+           trimmed.allSatisfy({ $0.isNumber || $0 == "." }),
+           let epoch = Double(trimmed), epoch.isFinite {
+            return Date(timeIntervalSince1970: epoch)
         }
         return nil
     }
@@ -360,19 +392,52 @@ public struct AltSourceVersion: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         version = try container.decode(String.self, forKey: .version)
-        let rawDate = try container.decode(String.self, forKey: .date)
-        guard let parsedDate = AltSourceDateParsing.date(from: rawDate) else {
+        // Tolerant date (deep dive Pass 2, SRC-2): a String goes
+        // through the extended parser (ISO, date-only,
+        // space-separated, epoch); a JSON number is epoch seconds.
+        // Only a genuinely unparseable date still drops the version.
+        if let rawDate = try? container.decode(String.self, forKey: .date) {
+            guard let parsedDate = AltSourceDateParsing.date(from: rawDate) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .date,
+                    in: container,
+                    debugDescription: "Invalid date string for field 'date': \(rawDate)"
+                )
+            }
+            date = parsedDate
+        } else if let epoch = try? container.decode(Double.self, forKey: .date) {
+            date = Date(timeIntervalSince1970: epoch)
+        } else {
             throw DecodingError.dataCorruptedError(
                 forKey: .date,
                 in: container,
-                debugDescription: "Invalid ISO-8601 date string for field 'date': \(rawDate)"
+                debugDescription: "Missing or invalid date for field 'date'"
             )
         }
-        date = parsedDate
         localizedDescription = try container.decodeIfPresent(String.self, forKey: .localizedDescription)
         downloadURL = try container.decode(URL.self, forKey: .downloadURL)
-        size = try container.decode(Int64.self, forKey: .size)
+        size = Self.decodeTolerantSize(from: container)
         minOSVersion = try container.decodeIfPresent(String.self, forKey: .minOSVersion)
+    }
+
+    /// Tolerant size (deep dive Pass 2, SRC-2): Int64, then Double
+    /// (truncated), then a digits-only string, else 0 — never throws.
+    /// Size is display-only; a string with anything but digits (such
+    /// as "12.5MB") degrades to 0 rather than a wrong unit. The
+    /// Double branch is bounded below Int64.max so a crafted huge
+    /// value cannot trap the conversion.
+    private static func decodeTolerantSize(from container: KeyedDecodingContainer<CodingKeys>) -> Int64 {
+        if let value = try? container.decode(Int64.self, forKey: .size) { return value }
+        if let value = try? container.decode(Double.self, forKey: .size),
+           value.isFinite, value < 9.0e18 {
+            return max(0, Int64(value))
+        }
+        if let text = try? container.decode(String.self, forKey: .size),
+           !text.isEmpty, text.allSatisfy(\.isNumber),
+           let value = Int64(text) {
+            return value
+        }
+        return 0
     }
 
     public func encode(to encoder: Encoder) throws {

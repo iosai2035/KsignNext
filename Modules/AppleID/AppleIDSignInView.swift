@@ -145,6 +145,16 @@ final class AppleIDSignInViewModel: ObservableObject, TwoFactorAnswering {
                             progress.attempt, progress.totalAttempts,
                             progress.claimPreset, progress.serverHost)
                     }
+                },
+                onAttemptError: { [weak self] error in
+                    // Same hop as onAttempt: show the real failure
+                    // live on the status line (2FA-1 diagnostic).
+                    // The next onAttempt call overwrites it with the
+                    // next attempt's progress; the Logs entry stays.
+                    Task { @MainActor in
+                        self?.statusMessage = (error as? LocalizedError)?.errorDescription
+                            ?? error.localizedDescription
+                    }
                 })
             self.session = session
             password = ""
