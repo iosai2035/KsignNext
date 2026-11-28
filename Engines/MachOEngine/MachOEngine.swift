@@ -1,246 +1,296 @@
 import Foundation
 
-/// High-level Mach-O inspection engine built on `MachOParser`.
+/// Minimal Mach-O parsing: thin + fat headers, architectures,
+/// code-signature presence, load-command free space, encryption.
 ///
-/// Reads Mach-O binaries from disk (or from in-memory bytes, e.g. an entry
-/// read out of an IPA) and answers the questions the signing / inspection
-/// UI needs: architectures, linked dylibs, RPATHs, UUID, minimum OS / SDK,
-/// encryption (FairPlay `cryptid`), and whether a code-signature load
-/// command exists. All parsing is bounds-checked in `MachOParser`; this
-/// class only adds file I/O and convenience queries.
-public final class MachOEngine {
+/// Pure Swift, no dependencies. Every read is bounds-checked against
+/// the buffer before it happens; a truncated or lying header throws
+/// `AppError.ipa(.invalidMachO)` instead of trapping. Only the arm64
+/// slice is ever inspected: iOS 16+ devices run arm64 only, and a
+/// binary without an arm64 slice cannot be signed for this app.
+///
+/// Layout facts (Mach-O format, verified against the vendored zsign
+/// parser `archo.cpp` which reads the same fields):
+/// - fat headers and their arch table are big-endian on disk;
+///   thin headers are little-endian on arm64 iOS.
+/// - `m_uLoadCommandsFreeSpace` in zsign = `__text` section offset
+///   minus (header size + sizeofcmds); signing a binary without an
+///   existing LC_CODE_SIGNATURE needs >= 16 free bytes there
+///   (`sizeof(codesignature_command)`), or the backend fails with
+///   "Can't find free space of LoadCommands for CodeSignature!".
+public enum MachOEngine {
 
-    /// Maximum Mach-O file size this engine will load into memory.
-    public static let maxMachOSize: Int64 = 2 * 1024 * 1024 * 1024
+    // MARK: - Constants
 
-    public init() {}
+    private static let mhMagic: UInt32 = 0xfeedface
+    private static let mhCigam: UInt32 = 0xcefaedfe
+    private static let mhMagic64: UInt32 = 0xfeedfacf
+    private static let mhCigam64: UInt32 = 0xcffaedfe
+    private static let fatMagic: UInt32 = 0xcafebabe
+    private static let fatCigam: UInt32 = 0xbebafeca
 
-    // MARK: - Parsing
+    private static let cpuArm64: Int32 = 0x0100000C
 
-    /// Parses the Mach-O binary at `url`.
-    public func parseMachO(at url: URL) throws -> MachOFile {
-        let attributes: [FileAttributeKey: Any]
-        do {
-            attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        } catch {
-            throw IPAError.fileNotFound(path: url.path)
+    private static let lcSegment: UInt32 = 0x1
+    private static let lcSegment64: UInt32 = 0x19
+    private static let lcCodeSignature: UInt32 = 0x1d
+    private static let lcEncryptionInfo: UInt32 = 0x21
+    private static let lcEncryptionInfo64: UInt32 = 0x2c
+
+    private static let codesignatureCommandSize = 16
+
+    // MARK: - Public API
+
+    /// Architectures in a thin or fat Mach-O.
+    public static func architectures(of data: Data) throws -> [MachOArchitecture] {
+        let slices = try slices(of: data)
+        return slices.map { $0.architecture }
+    }
+
+    /// True when the arm64 slice (or the thin binary) carries an
+    /// LC_CODE_SIGNATURE load command (0x1d). Throws when the data
+    /// is not a valid Mach-O or has no arm64 slice.
+    public static func hasCodeSignature(data: Data) throws -> Bool {
+        let slice = try arm64Slice(of: data)
+        return try scanLoadCommands(in: slice) { cmd, _, _ in cmd == lcCodeSignature }
+    }
+
+    /// Free bytes between the end of the load commands and the first
+    /// section data in the arm64 slice. `nil` when there is no
+    /// __text section to measure against. zsign needs >= 16 bytes
+    /// when no LC_CODE_SIGNATURE exists yet.
+    public static func codeSignatureFreeSpace(data: Data) throws -> Int? {
+        let slice = try arm64Slice(of: data)
+        guard let textOffset = try textSectionOffset(in: slice) else { return nil }
+        let used = slice.headerSize + Int(slice.sizeofcmds)
+        guard textOffset >= used else { return 0 }
+        return textOffset - used
+    }
+
+    /// True when LC_ENCRYPTION_INFO(_64) reports cryptid >= 1
+    /// (an encrypted App Store binary, which cannot be re-signed).
+    public static func isEncrypted(data: Data) throws -> Bool {
+        let slice = try arm64Slice(of: data)
+        return try scanLoadCommands(in: slice) { cmd, commandOffset, commandSize in
+            guard cmd == lcEncryptionInfo || cmd == lcEncryptionInfo64 else { return false }
+            // encryption_info_command: cmd, cmdsize, cryptoff, cryptsize, cryptid (20 bytes).
+            guard commandSize >= 20 else { return false }
+            let cryptid = try slice.readUInt32(at: commandOffset + 16)
+            return cryptid != 0
         }
-        if let size = attributes[.size] as? NSNumber, size.int64Value > Self.maxMachOSize {
-            throw IPAError.sizeLimitExceeded(limit: Self.maxMachOSize, actual: size.int64Value)
-        }
-        let data: Data
-        do {
-            data = try Data(contentsOf: url, options: [.mappedIfSafe])
-        } catch {
-            throw IPAError.ioError("Cannot read Mach-O file \(url.lastPathComponent): \(error.localizedDescription)")
-        }
-        return try parseMachO(data: data)
     }
 
-    /// Parses Mach-O `data` (thin or fat).
-    public func parseMachO(data: Data) throws -> MachOFile {
-        try MachOParser.parse(data: data)
-    }
+    // MARK: - Slice model
 
-    /// Parses only the header of a Mach-O binary (first `headerBytes` of
-    /// the file). Used by IPA validation, which reads just the first 4 KB
-    /// of an executable out of the archive.
-    public func parseHeader(at url: URL, headerBytes: Int = 4096) throws -> MachOFile {
-        let handle: FileHandle
-        do {
-            handle = try FileHandle(forReadingFrom: url)
-        } catch {
-            throw IPAError.fileNotFound(path: url.path)
-        }
-        defer { try? handle.close() }
-        guard let data = try handle.read(upToCount: headerBytes) else {
-            throw IPAError.invalidMachO("Cannot read Mach-O header of \(url.lastPathComponent).")
-        }
-        return try MachOParser.parse(data: data, allowTruncatedHeader: true)
-    }
+    /// One thin Mach-O image inside `data` (the whole buffer for a
+    /// thin binary, one arch entry for a fat binary).
+    private struct Slice {
+        let base: Int        // offset of the slice in `data`
+        let length: Int      // slice length in bytes
+        let data: Data       // the whole file buffer (reads are offset by `base`)
+        let is64Bit: Bool
+        let swapped: Bool    // true for CIGAM (big-endian thin) headers
+        let architecture: MachOArchitecture
 
-    // MARK: - Queries
-
-    /// Architecture names of every slice, e.g. `["arm64"]` or `["arm64", "x86_64"]`.
-    public func architectures(of file: MachOFile) -> [String] {
-        if file.isFat {
-            return file.architectures.map(\.cpuTypeName)
-        }
-        return [file.cpuTypeName]
-    }
-
-    /// True when every slice is arm64 / arm64e (the only architectures
-    /// that can run on a modern iPhone).
-    public func isARM64Only(_ file: MachOFile) -> Bool {
-        if file.isFat {
-            return !file.architectures.isEmpty && file.architectures.allSatisfy(\.isARM64)
-        }
-        return file.isARM64
-    }
-
-    /// True when the binary contains any non-arm64 slice.
-    public func hasNonARM64Slice(_ file: MachOFile) -> Bool {
-        if file.isFat {
-            return file.architectures.contains { !$0.isARM64 }
-        }
-        return !file.isARM64
-    }
-
-    /// Linked dynamic libraries (LC_LOAD_DYLIB / LC_LOAD_WEAK_DYLIB /
-    /// LC_REEXPORT_DYLIB), as `DylibInfo` values — never by text search.
-    public func linkedDylibs(of file: MachOFile) -> [DylibInfo] {
-        file.dylibs
-    }
-
-    /// Linked library paths only.
-    public func linkedLibraryPaths(of file: MachOFile) -> [String] {
-        file.dylibs.map(\.name)
-    }
-
-    /// RPATH entries (LC_RPATH).
-    public func rpaths(of file: MachOFile) -> [String] {
-        file.rpaths
-    }
-
-    /// Segment names, e.g. `["__TEXT", "__DATA", "__LINKEDIT"]`.
-    public func segmentNames(of file: MachOFile) -> [String] {
-        file.segments.map(\.name)
-    }
-
-    /// Sections of a named segment, or all sections when `segmentName` is nil.
-    public func sections(of file: MachOFile, inSegment segmentName: String? = nil) -> [MachOSection] {
-        if let segmentName {
-            return file.segments.first(where: { $0.name == segmentName })?.sections ?? []
-        }
-        return file.segments.flatMap(\.sections)
-    }
-
-    /// True when the binary is FairPlay-encrypted (`cryptid != 0` in
-    /// LC_ENCRYPTION_INFO_64). Encrypted binaries cannot be re-signed
-    /// without the original decryption; callers must surface this.
-    public func isEncrypted(_ file: MachOFile) -> Bool {
-        file.isEncrypted
-    }
-
-    /// True when a LC_CODE_SIGNATURE load command is present.
-    public func hasCodeSignature(_ file: MachOFile) -> Bool {
-        file.hasCodeSignature
-    }
-
-    /// Minimum OS / SDK from LC_BUILD_VERSION or LC_VERSION_MIN_IPHONEOS.
-    public func minimumOSVersion(of file: MachOFile) -> String? {
-        file.minimumOSVersion
-    }
-
-    public func sdkVersion(of file: MachOFile) -> String? {
-        file.sdkVersion
-    }
-
-    /// UUID of the parsed slice (LC_UUID), if present.
-    public func uuid(of file: MachOFile) -> String? {
-        file.uuid
-    }
-
-    /// Install name (LC_ID_DYLIB), for dylibs / frameworks.
-    public func installName(of file: MachOFile) -> String? {
-        file.installName
-    }
-
-    // MARK: - Per-slice parsing (fat binaries)
-
-    /// Parses every slice of a fat binary at `url` and returns one
-    /// `MachOFile` per slice (each with `sliceOffset` set).
-    public func parseAllSlices(at url: URL) throws -> [MachOFile] {
-        let data: Data
-        do {
-            data = try Data(contentsOf: url, options: [.mappedIfSafe])
-        } catch {
-            throw IPAError.fileNotFound(path: url.path)
-        }
-        return try parseAllSlices(data: data)
-    }
-
-    /// Parses every slice of a fat binary from in-memory `data`.
-    public func parseAllSlices(data: Data) throws -> [MachOFile] {
-        let topLevel = try MachOParser.parse(data: data)
-        guard topLevel.isFat else { return [topLevel] }
-        var results: [MachOFile] = []
-        for architecture in topLevel.architectures {
-            let start = Int(architecture.offset)
-            let end = Int(architecture.offset + architecture.size)
-            guard start >= 0, end <= data.count, end >= start else {
-                throw IPAError.invalidMachO("Fat slice at offset \(architecture.offset) is out of bounds.")
+        var headerSize: Int { is64Bit ? 32 : 28 }
+        /// sizeofcmds from the Mach-O header.
+        var sizeofcmds: UInt32 {
+            get throws {
+                // mach_header: magic(4) cputype(4) cpusubtype(4) filetype(4)
+                //   ncmds(4) sizeofcmds(4) flags(4) [reserved(4) for 64-bit]
+                try readUInt32(at: base + 20)
             }
-            let sliceData = data.subdata(in: start..<end)
-            let parsed = try MachOParser.parse(data: sliceData)
-            var withOffset = parsed
-            withOffset.sliceOffset = architecture.offset
-            withOffset.isFat = false
-            withOffset.architectures = [architecture]
-            results.append(withOffset)
         }
-        return results
-    }
-
-    /// Parses the arm64 slice of a fat binary, or the thin binary as-is.
-    public func parseARM64Slice(data: Data) throws -> MachOFile {
-        let topLevel = try MachOParser.parse(data: data)
-        guard topLevel.isFat else { return topLevel }
-        guard let arm64 = topLevel.architectures.first(where: \.isARM64) else {
-            throw IPAError.invalidMachO("Fat binary has no arm64 slice.")
+        var ncmds: UInt32 {
+            get throws { try readUInt32(at: base + 16) }
         }
-        let start = Int(arm64.offset)
-        let end = Int(arm64.offset + arm64.size)
-        guard start >= 0, end <= data.count, end >= start else {
-            throw IPAError.invalidMachO("arm64 slice is out of bounds.")
+
+        func readUInt32(at offset: Int) throws -> UInt32 {
+            guard offset >= 0, offset + 4 <= data.count else {
+                throw AppError.ipa(.invalidMachO("Read past the end of the Mach-O file at offset \(offset)."))
+            }
+            let value = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self) }
+            return swapped ? value.byteSwapped : value
         }
-        var parsed = try MachOParser.parse(data: data.subdata(in: start..<end))
-        parsed.sliceOffset = arm64.offset
-        parsed.isFat = true
-        parsed.architectures = topLevel.architectures
-        return parsed
-    }
-}
 
-// MARK: - MachOEngineProtocol conformance (coordinator integration)
-
-/// Adapts the concrete `MachOFile`-based API to the Domain protocol,
-/// which works in URLs and `MachOInfo` values. The overloads below take
-/// a URL where the class methods take a `MachOFile`; Swift resolves
-/// them by parameter type.
-extension MachOEngine: MachOEngineProtocol {
-    public func inspect(_ url: URL) async throws -> MachOInfo {
-        let file = try parseMachO(at: url)
-        return MachOInfo(
-            cpuType: file.architectures.first?.cpuTypeName ?? "arm64",
-            cpuSubtype: "",
-            is64Bit: true,
-            isFat: file.isFat,
-            architectures: architectures(of: file),
-            uuid: file.uuid,
-            linkedLibraries: linkedLibraryPaths(of: file),
-            rpaths: rpaths(of: file),
-            hasCodeSignature: file.hasCodeSignature,
-            minimumOSVersion: file.minimumOSVersion,
-            sdkVersion: file.sdkVersion,
-            segments: segmentNames(of: file),
-            isEncrypted: file.isEncrypted
-        )
+        func readUInt64(at offset: Int) throws -> UInt64 {
+            guard offset >= 0, offset + 8 <= data.count else {
+                throw AppError.ipa(.invalidMachO("Read past the end of the Mach-O file at offset \(offset)."))
+            }
+            let value = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt64.self) }
+            return swapped ? value.byteSwapped : value
+        }
     }
 
-    public func architectures(of url: URL) async throws -> [String] {
-        architectures(of: try parseMachO(at: url))
+    // MARK: - Slicing
+
+    private static func slices(of data: Data) throws -> [Slice] {
+        guard data.count >= 4 else {
+            throw AppError.ipa(.invalidMachO("File is too small to be a Mach-O binary (\(data.count) bytes)."))
+        }
+        let magic = data.withUnsafeBytes { $0.load(as: UInt32.self) }
+        switch magic {
+        case fatMagic, fatCigam:
+            // Fat header (big-endian on disk): magic + nfat_arch.
+            guard data.count >= 8 else {
+                throw AppError.ipa(.invalidMachO("Truncated fat Mach-O header."))
+            }
+            let nfat = Int(data.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self) }.bigEndian)
+            guard nfat > 0, nfat <= 64 else {
+                throw AppError.ipa(.invalidMachO("Unreasonable fat architecture count: \(nfat)."))
+            }
+            var result: [Slice] = []
+            for i in 0..<nfat {
+                let entry = 8 + i * 20
+                guard entry + 20 <= data.count else {
+                    throw AppError.ipa(.invalidMachO("Truncated fat architecture table."))
+                }
+                let be32: (Int) -> UInt32 = { off in
+                    data.withUnsafeBytes { $0.load(fromByteOffset: off, as: UInt32.self) }.bigEndian
+                }
+                let cpuType = Int32(bitPattern: be32(entry))
+                let cpuSubtype = Int32(bitPattern: be32(entry + 4))
+                let offset = Int(be32(entry + 8))
+                let size = Int(be32(entry + 12))
+                guard offset >= 0, size >= 4, offset + size <= data.count else {
+                    throw AppError.ipa(.invalidMachO("Fat slice \(i) lies outside the file."))
+                }
+                result.append(try thinSlice(base: offset, length: size, data: data,
+                                            cpuType: cpuType, cpuSubtype: cpuSubtype))
+            }
+            return result
+        case mhMagic, mhMagic64, mhCigam, mhCigam64:
+            return [try thinSlice(base: 0, length: data.count, data: data, cpuType: nil, cpuSubtype: nil)]
+        default:
+            throw AppError.ipa(.invalidMachO("Not a Mach-O binary (magic 0x\(String(magic, radix: 16)))."))
+        }
     }
 
-    public func dependencies(of url: URL) async throws -> [String] {
-        linkedLibraryPaths(of: try parseMachO(at: url))
+    private static func thinSlice(base: Int, length: Int, data: Data,
+                                  cpuType: Int32?, cpuSubtype: Int32?) throws -> Slice {
+        guard base + 4 <= data.count else {
+            throw AppError.ipa(.invalidMachO("Truncated Mach-O header."))
+        }
+        let magic = data.withUnsafeBytes { $0.load(fromByteOffset: base, as: UInt32.self) }
+        let is64Bit: Bool
+        let swapped: Bool
+        switch magic {
+        case mhMagic: is64Bit = false; swapped = false
+        case mhMagic64: is64Bit = true; swapped = false
+        case mhCigam: is64Bit = false; swapped = true
+        case mhCigam64: is64Bit = true; swapped = true
+        default:
+            throw AppError.ipa(.invalidMachO("Not a Mach-O binary (magic 0x\(String(magic, radix: 16)))."))
+        }
+        let headerSize = is64Bit ? 32 : 28
+        guard base + headerSize <= data.count, base + headerSize <= base + length else {
+            throw AppError.ipa(.invalidMachO("Truncated Mach-O header."))
+        }
+        func u32(_ offset: Int) -> UInt32 {
+            let value = data.withUnsafeBytes { $0.load(fromByteOffset: base + offset, as: UInt32.self) }
+            return swapped ? value.byteSwapped : value
+        }
+        let type = cpuType ?? Int32(bitPattern: u32(4))
+        let subtype = cpuSubtype ?? Int32(bitPattern: u32(8))
+        return Slice(base: base, length: length, data: data, is64Bit: is64Bit, swapped: swapped,
+                     architecture: MachOArchitecture(cpuType: type, cpuSubtype: subtype, is64Bit: is64Bit))
     }
 
-    public func isEncrypted(_ url: URL) async throws -> Bool {
-        try parseMachO(at: url).isEncrypted
+    private static func arm64Slice(of data: Data) throws -> Slice {
+        let all = try slices(of: data)
+        guard let slice = all.first(where: { $0.architecture.isArm64 }) else {
+            throw AppError.ipa(.invalidMachO("No arm64 slice in this Mach-O binary."))
+        }
+        return slice
     }
 
-    public func uuid(of url: URL) async throws -> String? {
-        try parseMachO(at: url).uuid
+    // MARK: - Load-command scan
+
+    /// Walks the load commands of `slice`, calling `body` for each
+    /// command (cmd, absolute file offset, cmdsize). Returns true as
+    /// soon as `body` returns true. Every step is bounds-checked.
+    private static func scanLoadCommands(in slice: Slice,
+                                         body: (UInt32, Int, Int) throws -> Bool) throws -> Bool {
+        let ncmds = try slice.ncmds
+        guard ncmds <= 10_000 else {
+            throw AppError.ipa(.invalidMachO("Unreasonable load-command count: \(ncmds)."))
+        }
+        let sizeofcmds = try slice.sizeofcmds
+        guard slice.headerSize + Int(sizeofcmds) <= slice.length else {
+            throw AppError.ipa(.invalidMachO("Load commands run past the end of the Mach-O slice."))
+        }
+        var offset = slice.base + slice.headerSize
+        let end = slice.base + slice.headerSize + Int(sizeofcmds)
+        for _ in 0..<ncmds {
+            guard offset + 8 <= end, offset + 8 <= slice.data.count else {
+                throw AppError.ipa(.invalidMachO("Truncated load command."))
+            }
+            let cmd = try slice.readUInt32(at: offset)
+            let cmdsize = Int(try slice.readUInt32(at: offset + 4))
+            guard cmdsize >= 8, offset + cmdsize <= end, offset + cmdsize <= slice.data.count else {
+                throw AppError.ipa(.invalidMachO("Load command size \(cmdsize) is out of bounds."))
+            }
+            if try body(cmd, offset, cmdsize) { return true }
+            offset += cmdsize
+        }
+        return false
+    }
+
+    /// File offset of the __text section in the __TEXT segment, or
+    /// nil when there is no __text section.
+    private static func textSectionOffset(in slice: Slice) throws -> Int? {
+        var found: Int?
+        _ = try scanLoadCommands(in: slice) { cmd, commandOffset, commandSize in
+            guard found == nil else { return true }
+            if slice.is64Bit {
+                guard cmd == lcSegment64, commandSize >= 72 else { return false }
+                let segname = segmentName(data: slice.data, offset: commandOffset + 8)
+                guard segname == "__TEXT" else { return false }
+                let nsects = Int(try slice.readUInt32(at: commandOffset + 64))
+                guard nsects <= 512 else {
+                    throw AppError.ipa(.invalidMachO("Unreasonable section count: \(nsects)."))
+                }
+                for j in 0..<nsects {
+                    let sectionOffset = commandOffset + 72 + j * 80
+                    guard sectionOffset + 80 <= commandOffset + commandSize,
+                          sectionOffset + 80 <= slice.data.count else {
+                        throw AppError.ipa(.invalidMachO("Section header runs past its segment command."))
+                    }
+                    let sectname = segmentName(data: slice.data, offset: sectionOffset)
+                    guard sectname == "__text" else { continue }
+                    found = Int(try slice.readUInt32(at: sectionOffset + 48))
+                    return true
+                }
+            } else {
+                guard cmd == lcSegment, commandSize >= 56 else { return false }
+                let segname = segmentName(data: slice.data, offset: commandOffset + 8)
+                guard segname == "__TEXT" else { return false }
+                let nsects = Int(try slice.readUInt32(at: commandOffset + 48))
+                guard nsects <= 512 else {
+                    throw AppError.ipa(.invalidMachO("Unreasonable section count: \(nsects)."))
+                }
+                for j in 0..<nsects {
+                    let sectionOffset = commandOffset + 56 + j * 68
+                    guard sectionOffset + 68 <= commandOffset + commandSize,
+                          sectionOffset + 68 <= slice.data.count else {
+                        throw AppError.ipa(.invalidMachO("Section header runs past its segment command."))
+                    }
+                    let sectname = segmentName(data: slice.data, offset: sectionOffset)
+                    guard sectname == "__text" else { continue }
+                    found = Int(try slice.readUInt32(at: sectionOffset + 40))
+                    return true
+                }
+            }
+            return false
+        }
+        return found
+    }
+
+    /// A 16-byte segment/section name (NUL-padded) as a String.
+    private static func segmentName(data: Data, offset: Int) -> String {
+        guard offset >= 0, offset + 16 <= data.count else { return "" }
+        let bytes = data[offset..<(offset + 16)]
+        let trimmed = bytes.prefix(while: { $0 != 0 })
+        return String(bytes: trimmed, encoding: .utf8) ?? ""
     }
 }
