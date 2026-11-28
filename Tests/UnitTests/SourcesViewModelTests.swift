@@ -99,6 +99,7 @@ final class SourcesViewModelTests: XCTestCase {
         super.tearDown()
     }
 
+    @MainActor
     func testAddSourceRegistersWithEngine() async throws {
         let vm = makeViewModel()
         vm.newSourceName = "Test Source"
@@ -112,6 +113,7 @@ final class SourcesViewModelTests: XCTestCase {
         XCTAssertNotNil(item.engineID, "The item must carry the engine id, or refreshes cannot find it")
     }
 
+    @MainActor
     func testFetchAppsListsNewestVersionAndKeepsBadIconApp() async throws {
         let vm = makeViewModel()
         vm.newSourceName = "Test Source"
@@ -127,6 +129,7 @@ final class SourcesViewModelTests: XCTestCase {
         XCTAssertNotNil(apps.first { $0.name == "App Two" })
     }
 
+    @MainActor
     func testRefreshKeepsEngineRegistration() async throws {
         let vm = makeViewModel()
         vm.newSourceName = "Test Source"
@@ -146,6 +149,7 @@ final class SourcesViewModelTests: XCTestCase {
         XCTAssertEqual(apps.count, 2)
     }
 
+    @MainActor
     func testRemoveAlsoRemovesFromEngine() async throws {
         let vm = makeViewModel()
         vm.newSourceName = "Test Source"
