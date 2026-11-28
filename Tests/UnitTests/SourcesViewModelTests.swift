@@ -75,6 +75,7 @@ final class SourcesViewModelTests: XCTestCase {
 
     private let storageKey = "ksign.sources"
 
+    @MainActor
     private func makeViewModel() -> SourcesViewModel {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubURLProtocol.self]
