@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 import CoreData
 import CryptoKit
+@testable import KsignNext
 
 /// Phase 1 test support: fixture loading, synthetic DER / profile
 /// builders, fake engines and repositories, and an in-memory Core Data
