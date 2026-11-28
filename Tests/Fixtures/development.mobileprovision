@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>AppIDName</key>
+	<string>Test App</string>
+	<key>CreationDate</key>
+	<date>2026-10-29T12:16:53Z</date>
+	<key>DeveloperCertificates</key>
+	<array>
+		<string>MIIDozCCAougAwIBAgIEAaKzxDANBgkqhkiG9w0BAQsFADBpMTIwMAYDVQQDDClBcHBsZSBEZXZlbG9wbWVudDogVGVzdCBVc2VyIChBQkNERTEyMzQ1KTETMBEGA1UECwwKQUJDREUxMjM0NTERMA8GA1UECgwIVGVzdCBPcmcxCzAJBgNVBAYTAlVTMB4XDTI2MTEyODEyMTY0MFoXDTI3MTEyODEyMTY0MFowaTEyMDAGA1UEAwwpQXBwbGUgRGV2ZWxvcG1lbnQ6IFRlc3QgVXNlciAoQUJDREUxMjM0NSkxEzARBgNVBAsMCkFCQ0RFMTIzNDUxETAPBgNVBAoMCFRlc3QgT3JnMQswCQYDVQQGEwJVUzCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAKMLpuZvxp0Ag+toSLlg3f0B4SzDDps8ejBxXjI9dHhQ2ye0T1Mqf/dl92YTKlz5j//d0Qo9LqAAx8ufnVHoMzKmYT7oW0y7DO12zJRzuLbiSlfoSGLYMzPcazVEdq/lYSvnChPadIecHJBuwSRyqQN+mHbcbeDqs3qk02RPVPJ2rSY8jhS/+2aAPHKL4cNhbus9kUZcfhV4SxJH4nwoRbTRCWXBIpfY9B872F73QWKD479cRBU32FiHygYiiV/UaWVmgGjJFrLIRuBe8MoDbjO6jLf2UoLCsFM4QtjcC27OBttykg5D3g/M91wp8NFY64/UQ6XE9dUPOFiLCBzdjucCAwEAAaNTMFEwHQYDVR0OBBYEFB926VMZLV4/A6G3IKT1FF82K+08MB8GA1UdIwQYMBaAFB926VMZLV4/A6G3IKT1FF82K+08MA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAECKz0IoMnA9soEp88YO7p2GjkLeh8cs8la2s66d3q98idTpntoKk0TTzbT9raVfTcdUdmjk4czhmoMyyhuHhiRV99+z8ShdodRvkk8v3gGvafahwfH/goseQTjn9voaUd1eKg4aDlCpy0r9qik88Oon0bTzwbZmutb2UAzVhBrvlnKJbfEeEYV78PaUGuzBj1a8CJXWrmQ4Lc5os0wxY+lMAhRHJ9b69ohKUCFd/rALkr4uR1wJcnmifvIiLr+kArf/vzr54KopB9wYcYE+FpoUSs1fGLLqLdTDUAJkuMN5+9TwdZzsOLaufnlaq0n4Wu6BNGlCI7CuK3eVYgxkZmU=</string>
+	</array>
+	<key>Entitlements</key>
+	<dict>
+		<key>application-identifier</key>
+		<string>ABCDE12345.com.example.test</string>
+		<key>get-task-allow</key>
+		<true/>
+		<key>keychain-access-groups</key>
+		<array>
+			<string>ABCDE12345.*</string>
+		</array>
+	</dict>
+	<key>ExpirationDate</key>
+	<date>2027-11-28T12:16:53Z</date>
+	<key>Name</key>
+	<string>Test Development</string>
+	<key>ProvisionedDevices</key>
+	<array>
+		<string>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA</string>
+	</array>
+	<key>TeamIdentifier</key>
+	<array>
+		<string>ABCDE12345</string>
+	</array>
+	<key>TeamName</key>
+	<string>Test Org</string>
+	<key>UUID</key>
+	<string>11111111-2222-3333-4444-555555555555</string>
+	<key>Version</key>
+	<integer>1</integer>
+</dict>
+</plist>
