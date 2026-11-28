@@ -256,11 +256,12 @@ final class InMemoryCoreDataStack {
         }
     }
 
-    private static func attribute(_ name: String, type: NSAttributeType, optional: Bool = true) -> NSAttributeDescription {
+    private static func attribute(_ name: String, type: NSAttributeType, optional: Bool = true, transformer: String? = nil) -> NSAttributeDescription {
         let attribute = NSAttributeDescription()
         attribute.name = name
         attribute.attributeType = type
         attribute.isOptional = optional
+        attribute.valueTransformerName = transformer
         return attribute
     }
 
@@ -269,7 +270,7 @@ final class InMemoryCoreDataStack {
     /// repository tests do not depend on the model file landing first.
     static func makeModel() -> NSManagedObjectModel {
         let certificate = NSEntityDescription()
-        certificate.name = "CertificateEntity"
+        certificate.name = "Certificate"
         certificate.managedObjectClassName = "NSManagedObject"
         certificate.properties = [
             attribute("id", type: .UUIDAttributeType, optional: false),
@@ -289,7 +290,7 @@ final class InMemoryCoreDataStack {
             attribute("importedAt", type: .dateAttributeType, optional: false),
         ]
         let profile = NSEntityDescription()
-        profile.name = "ProvisioningProfileEntity"
+        profile.name = "ProvisioningProfile"
         profile.managedObjectClassName = "NSManagedObject"
         profile.properties = [
             attribute("id", type: .UUIDAttributeType, optional: false),
@@ -301,12 +302,12 @@ final class InMemoryCoreDataStack {
             attribute("kind", type: .stringAttributeType, optional: false),
             attribute("expirationDate", type: .dateAttributeType),
             attribute("creationDate", type: .dateAttributeType),
-            attribute("bundleIdentifierPrefixes", type: .transformableAttributeType),
+            attribute("bundleIdentifierPrefixes", type: .transformableAttributeType, transformer: "NSSecureUnarchiveFromData"),
             attribute("platform", type: .stringAttributeType),
             attribute("dataHash", type: .stringAttributeType, optional: false),
-            attribute("entitlements", type: .transformableAttributeType),
-            attribute("provisionedDevices", type: .transformableAttributeType),
-            attribute("certificates", type: .transformableAttributeType),
+            attribute("entitlements", type: .transformableAttributeType, transformer: "NSSecureUnarchiveFromData"),
+            attribute("provisionedDevices", type: .transformableAttributeType, transformer: "NSSecureUnarchiveFromData"),
+            attribute("certificates", type: .transformableAttributeType, transformer: "NSSecureUnarchiveFromData"),
             attribute("fileURL", type: .stringAttributeType),
             attribute("importedAt", type: .dateAttributeType, optional: false),
         ]
