@@ -353,7 +353,6 @@
 "logs.level.warning" = "Warning";
 "logs.level.error" = "Error";
 "logs.level.critical" = "Critical";
-"dashboard.expiry.item" = "%@ expires %@";
 "common.retry" = "Retry";
 "signing.stage.cancelled" = "Signing cancelled.";
 "certs.error.notSignedIn" = "Sign in with your Apple ID first.";
@@ -383,6 +382,11 @@
 "sources.add.url.placeholder" = "https://example.com/apps.json";
 "sources.error.duplicate" = "A source with this name or URL already exists.";
 "sources.apps.loadError" = "Couldn't load this source";
+"sources.status.active" = "Active";
+"sources.status.unreachable" = "Unreachable";
+"sources.status.invalid" = "Invalid";
+"sources.status.updating" = "Updating";
+"sources.apps.count" = "%d apps";
 "install.empty" = "No signed apps yet";
 "install.empty.detail" = "Sign an app first, then come back here to install it on this device or another one.";
 "install.refresh.udid.hint" = "Signed in, but re-signing needs your device UDID — paste it in the Device UDID section below.";

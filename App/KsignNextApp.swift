@@ -61,6 +61,7 @@ private struct RootTabView: View {
                 .tabItem { Label(NSLocalizedString("tab.settings", comment: ""), systemImage: "gearshape") }
                 .tag(AppTab.settings)
         }
+        .tint(DS.ColorPalette.accentBrand)
         .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: $coordinator.showDeepLinkError) {
             Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) {}
         } message: {

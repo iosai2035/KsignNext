@@ -216,4 +216,64 @@ final class SourcesEngineTests: XCTestCase {
         XCTAssertEqual(source.apps.count, 1)
         XCTAssertEqual(source.apps.first?.appPermissions?.privacy?.first?.name, "LocalNetwork")
     }
+
+    /// A malformed app icon URL must not drop the app: the icon is
+    /// display metadata, so it degrades to nil and the app stays
+    /// listed (the old strict decode threw and lost the app).
+    func testMalformedAppIconURLDegradesToNilNotDroppedApp() throws {
+        let json = """
+        {
+          "name": "Test",
+          "identifier": "com.example.test",
+          "apps": [
+            {
+              "name": "Good Icon",
+              "bundleIdentifier": "com.example.good",
+              "developerName": "Example",
+              "iconURL": "https://example.com/good.png",
+              "versions": [
+                {
+                  "version": "1.0",
+                  "date": "2024-01-15T10:30:00Z",
+                  "downloadURL": "https://example.com/good.ipa",
+                  "size": 100
+                }
+              ]
+            },
+            {
+              "name": "Bad Icon",
+              "bundleIdentifier": "com.example.bad",
+              "developerName": "Example",
+              "iconURL": "not a url :::",
+              "versions": [
+                {
+                  "version": "1.0",
+                  "date": "2024-01-15T10:30:00Z",
+                  "downloadURL": "https://example.com/bad.ipa",
+                  "size": 100
+                }
+              ]
+            },
+            {
+              "name": "No Icon",
+              "bundleIdentifier": "com.example.noicon",
+              "developerName": "Example",
+              "versions": [
+                {
+                  "version": "1.0",
+                  "date": "2024-01-15T10:30:00Z",
+                  "downloadURL": "https://example.com/noicon.ipa",
+                  "size": 100
+                }
+              ]
+            }
+          ]
+        }
+        """
+        let source = try JSONDecoder().decode(AltSource.self, from: Data(json.utf8))
+        XCTAssertEqual(source.apps.map(\.name), ["Good Icon", "Bad Icon", "No Icon"])
+        XCTAssertEqual(source.apps.first { $0.name == "Good Icon" }?.iconURL?.absoluteString, "https://example.com/good.png")
+        XCTAssertNil(source.apps.first { $0.name == "Bad Icon" }?.iconURL)
+        XCTAssertNil(source.apps.first { $0.name == "No Icon" }?.iconURL)
+    }
 }

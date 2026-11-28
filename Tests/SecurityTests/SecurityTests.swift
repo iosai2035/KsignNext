@@ -64,23 +64,23 @@ final class SecurityTests: XCTestCase {
         XCTAssertTrue(vm.downloads.isEmpty)
     }
 
-    func testInsecureHTTPSourceRejected() {
+    func testInsecureHTTPSourceRejected() async {
         let vm = SourcesViewModel()
         vm.newSourceName = "Bad"
         vm.newSourceURL = "http://example.com/apps.json"
-        vm.addSource()
+        await vm.addSource()
         XCTAssertNotNil(vm.errorMessage)
         XCTAssertTrue(vm.sources.isEmpty)
     }
 
-    func testEmptySourceNameRejectedWithNameError() {
+    func testEmptySourceNameRejectedWithNameError() async {
         // An empty name with a valid HTTPS URL must blame the name,
         // not the URL: the old combined guard reported the valid URL
         // as invalid and the user could never add the source.
         let vm = SourcesViewModel()
         vm.newSourceName = ""
         vm.newSourceURL = "https://example.com/apps.json"
-        vm.addSource()
+        await vm.addSource()
         XCTAssertEqual(vm.errorMessage, NSLocalizedString("sources.error.name", comment: ""))
         XCTAssertTrue(vm.sources.isEmpty)
     }

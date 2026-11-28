@@ -14,18 +14,17 @@ struct ActivityItem: Identifiable, Equatable {
 protocol DashboardDataProviding {
     func loadCounts() -> DashboardCounts
     func loadRecentActivity() -> [ActivityItem]
-    func expiringCertificates() -> [String]
+    func expiringCertificates() -> [ExpiringItem]
 }
 
-/// One expiring-certificate line: "<name> expires <date>".
-/// Shared by the file scan below and the repository lookup in
-/// `DashboardViewModel`, so both sources format identically.
-func expiryItemText(name: String, date: Date) -> String {
-    String(
-        format: NSLocalizedString("dashboard.expiry.item", comment: ""),
-        name,
-        DateFormatter.localizedString(from: date, dateStyle: .medium, timeStyle: .none)
-    )
+/// One expiring certificate: its display name and expiry date. The
+/// view renders the countdown from the date (`Text(date,
+/// style: .relative)` — "in 3 days"), so the data stays a date
+/// instead of a preformatted string that cannot count down.
+struct ExpiringItem: Identifiable, Equatable {
+    let id = UUID()
+    let name: String
+    let date: Date
 }
 
 /// Reads real on-disk state (Documents workspace); returns zero/empty when nothing exists.
@@ -86,7 +85,7 @@ final class LocalDashboardDataProvider: DashboardDataProviding {
     /// profiles can be read here; CMS-wrapped profiles report no
     /// date, and .p12 expiry comes from the certificate repository
     /// (see `DashboardViewModel.refresh()`).
-    func expiringCertificates() -> [String] {
+    func expiringCertificates() -> [ExpiringItem] {
         guard let dir = Workspace.folder("Certificates") else { return [] }
         let items = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         let limit = Calendar.current.date(byAdding: .day, value: 7, to: Date()) ?? Date()
@@ -98,7 +97,7 @@ final class LocalDashboardDataProvider: DashboardDataProviding {
                   expiry <= limit else { continue }
             found.append((url.deletingPathExtension().lastPathComponent, expiry))
         }
-        return found.sorted { $0.date < $1.date }.map { expiryItemText(name: $0.name, date: $0.date) }
+        return found.sorted { $0.date < $1.date }.map { ExpiringItem(name: $0.name, date: $0.date) }
     }
 }
 
@@ -106,7 +105,7 @@ final class LocalDashboardDataProvider: DashboardDataProviding {
 final class DashboardViewModel: ObservableObject {
     @Published var counts = DashboardCounts()
     @Published var recentActivity: [ActivityItem] = []
-    @Published var expiringCertificates: [String] = []
+    @Published var expiringCertificates: [ExpiringItem] = []
     @Published var isLoading = false
     /// True once the first load has finished; the empty state is only
     /// shown after this, so it never flashes while data is loading.
@@ -136,11 +135,11 @@ final class DashboardViewModel: ObservableObject {
             let limit = Calendar.current.date(byAdding: .day, value: 7, to: Date()) ?? Date()
             for model in models {
                 guard let expiry = model.expirationDate, expiry <= limit else { continue }
-                let item = expiryItemText(name: model.name, date: expiry)
-                if !expiring.contains(item) { expiring.append(item) }
+                let item = ExpiringItem(name: model.name, date: expiry)
+                if !expiring.contains(where: { $0.name == item.name }) { expiring.append(item) }
             }
         }
-        expiringCertificates = expiring.sorted()
+        expiringCertificates = expiring.sorted { $0.date < $1.date }
     }
 }
 
@@ -160,6 +159,7 @@ struct DashboardView: View {
                     recentSection
                 }
                 .padding(DS.Spacing.xl)
+                .animation(.default, value: viewModel.hasLoaded)
             }
             .refreshable { await viewModel.refresh() }
             .navigationTitle(NSLocalizedString("dashboard.title", comment: ""))
@@ -186,30 +186,54 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: DS.Spacing.xs) {
             Label(NSLocalizedString("dashboard.expiry.warning", comment: ""), systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
-            ForEach(viewModel.expiringCertificates, id: \.self) { Text($0).font(.caption) }
+            // Each row is a live countdown ("in 3 days") and a button
+            // into Certificates, where the expiring item can be acted on.
+            ForEach(viewModel.expiringCertificates) { item in
+                Button { coordinator.selectTab(.certificates) } label: {
+                    HStack {
+                        Text(item.name).font(.caption)
+                        Spacer()
+                        Text(item.date, style: .relative).font(.caption).foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(DS.cardPadding)
         .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: DS.cornerRadius))
         .accessibilityIdentifier("dashboard.expiryBanner")
+        .transition(.opacity)
     }
 
     private var countsGrid: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: DS.Spacing.lg) {
-            countCard(NSLocalizedString("dashboard.count.imported", comment: ""), value: viewModel.counts.importedApps, icon: "app.badge")
-            countCard(NSLocalizedString("dashboard.count.signed", comment: ""), value: viewModel.counts.signedApps, icon: "checkmark.seal.fill")
-            countCard(NSLocalizedString("dashboard.count.certs", comment: ""), value: viewModel.counts.certificates, icon: "key.fill")
-            countCard(NSLocalizedString("dashboard.count.downloads", comment: ""), value: viewModel.counts.downloads, icon: "arrow.down.circle")
+            countCard(NSLocalizedString("dashboard.count.imported", comment: ""), value: viewModel.counts.importedApps, icon: "app.badge", tab: .applications, id: "dashboard.count.imported")
+            countCard(NSLocalizedString("dashboard.count.signed", comment: ""), value: viewModel.counts.signedApps, icon: "checkmark.seal.fill", tab: .applications, id: "dashboard.count.signed")
+            countCard(NSLocalizedString("dashboard.count.certs", comment: ""), value: viewModel.counts.certificates, icon: "key.fill", tab: .certificates, id: "dashboard.count.certs")
+            // Downloads live under Settings, so the card lands there.
+            countCard(NSLocalizedString("dashboard.count.downloads", comment: ""), value: viewModel.counts.downloads, icon: "arrow.down.circle", tab: .settings, id: "dashboard.count.downloads")
         }
         .accessibilityIdentifier("dashboard.counts")
     }
 
-    private func countCard(_ title: String, value: Int, icon: String) -> some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
-            Label(title, systemImage: icon).font(.caption).foregroundStyle(.secondary)
-            Text("\(value)").font(.largeTitle.bold())
+    /// A count card is a button into the screen the number comes
+    /// from — a static number on the home screen is a dead end.
+    private func countCard(_ title: String, value: Int, icon: String, tab: AppTab, id: String) -> some View {
+        Button { coordinator.selectTab(tab) } label: {
+            VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+                HStack(spacing: DS.Spacing.xs) {
+                    Image(systemName: icon).foregroundStyle(DS.ColorPalette.accentBrand)
+                    Text(title).font(.caption).foregroundStyle(.secondary)
+                }
+                Text("\(value)").font(.largeTitle.bold())
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .dsCard()
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .dsCard()
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(id)
     }
 
     private var shortcutsSection: some View {

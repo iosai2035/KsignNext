@@ -353,7 +353,6 @@
 "logs.level.warning" = "تحذير";
 "logs.level.error" = "خطأ";
 "logs.level.critical" = "حرج";
-"dashboard.expiry.item" = "تنتهي صلاحية %@ في %@";
 "common.retry" = "إعادة المحاولة";
 "signing.stage.cancelled" = "تم إلغاء التوقيع.";
 "certs.error.notSignedIn" = "سجّل الدخول بحساب آبل أولًا.";
@@ -383,6 +382,11 @@
 "sources.add.url.placeholder" = "https://example.com/apps.json";
 "sources.error.duplicate" = "يوجد مصدر بهذا الاسم أو الرابط بالفعل.";
 "sources.apps.loadError" = "تعذّر تحميل هذا المصدر";
+"sources.status.active" = "نشط";
+"sources.status.unreachable" = "تعذّر الوصول";
+"sources.status.invalid" = "غير صالح";
+"sources.status.updating" = "جارٍ التحديث";
+"sources.apps.count" = "%d تطبيقات";
 "install.empty" = "لا توجد تطبيقات موقّعة بعد";
 "install.empty.detail" = "وقّع تطبيقًا أولًا، ثم عُد إلى هنا لتثبيته على هذا الجهاز أو جهاز آخر.";
 "install.refresh.udid.hint" = "تم تسجيل الدخول، لكن إعادة التوقيع تحتاج إلى UDID جهازك — الصقه في قسم UDID الجهاز أدناه.";
