@@ -486,8 +486,22 @@ public final class AppleRefreshClient: AppleRefreshClientProtocol, @unchecked Se
     public func login(email: String, password: String,
                       twoFactorHandler: @escaping @Sendable (TwoFactorPrompt) async -> TwoFactorResponse,
                       timeout: TimeInterval = defaultTimeout) async throws -> AppleIDLoginResult {
+        // R-H1: count the WORKER, not the waiter. The detached task
+        // can outlive this call (timeout/cancellation only cancels
+        // the wait; the FFI call keeps running), so the count is
+        // raised synchronously here and lowered inside the detached
+        // task's defer — otherwise deinit could free the session
+        // while the login worker still uses it.
+        lock.lock()
+        inFlight += 1
+        lock.unlock()
         let loginTask = Task.detached(priority: .userInitiated) { [self] in
-            try self.loginBlocking(email: email, password: password)
+            defer {
+                self.lock.lock()
+                self.inFlight -= 1
+                self.lock.unlock()
+            }
+            return try self.loginBlocking(email: email, password: password)
         }
         let deadline = Date().addingTimeInterval(timeout)
         do {
@@ -727,15 +741,21 @@ public final class AppleRefreshClient: AppleRefreshClientProtocol, @unchecked Se
     }
 
     private func runBlocking<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
+        // R-H1: count the WORKER, not the waiter (same as login
+        // above). The old defer on this function ran when the waiter
+        // returned — on cancellation that is before the detached
+        // worker finishes, leaving the session freeable mid-call.
         lock.lock()
         inFlight += 1
         lock.unlock()
-        defer {
-            lock.lock()
-            inFlight -= 1
-            lock.unlock()
-        }
-        return try await Task.detached(priority: .userInitiated) { try body() }.value
+        return try await Task.detached(priority: .userInitiated) { [self] in
+            defer {
+                self.lock.lock()
+                self.inFlight -= 1
+                self.lock.unlock()
+            }
+            return try body()
+        }.value
     }
 
     private func freeIfIdle() {

@@ -332,7 +332,11 @@ impl SessionInner {
     /// 2FA via the poll/respond functions). The account is stored on
     /// the session whether login succeeds or fails, so a later call
     /// can inspect it — but only a successful login leaves it usable.
-    pub fn login(self: &Arc<Self>, email: &str, password: &str) -> Result<Value, Value> {
+    /// Takes an owned Arc (R-H1 defense-in-depth): the FFI caller
+    /// clones the session's Arc before the call, so the SessionInner
+    /// stays alive for the whole blocking login even if Swift frees
+    /// the session struct mid-call.
+    pub fn login(self: Arc<Self>, email: &str, password: &str) -> Result<Value, Value> {
         let step = "login";
         if email.trim().is_empty() {
             return Err(errors::invalid_argument(step, "email must not be empty"));
@@ -364,7 +368,7 @@ impl SessionInner {
         // prompt JSON, stores a fresh oneshot Sender, and awaits the
         // Receiver — fully async, no thread blocked, no C callback
         // into Swift. `respond_2fa` / `cancel` send on that Sender.
-        let inner_cb = Arc::clone(self);
+        let inner_cb = Arc::clone(&self);
         let callback = move |params: TwoFactorCallbackParams| {
             let inner_cb = Arc::clone(&inner_cb);
             async move {

@@ -737,6 +737,12 @@ public final class ArchiveEngine {
             let name = String(bytes: nameData.prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
             let sizeString = String(bytes: header.subdata(in: 124..<136).prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
             let size = Int64(sizeString.trimmingCharacters(in: .whitespaces), radix: 8) ?? 0
+            // R-H2: a negative size makes the block count negative,
+            // so the offset walks backwards (hang) and the stored
+            // entry size would trap later consumers.
+            guard size >= 0 else {
+                throw IPAError.invalidZIP("Negative tar member size.")
+            }
             let typeFlag = header[156]
             // Long-name ('L') and long-link ('K') GNU extensions: the next
             // block holds the real name; skip it and re-read the real header.
