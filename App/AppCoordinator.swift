@@ -76,7 +76,7 @@ final class AppCoordinator: ObservableObject {
     /// list.
     let certificatesViewModel: CertificatesViewModel
 
-    init(container: DependencyContainer = DependencyContainer()) {
+    init(container: DependencyContainer = DependencyContainer(taskRegistry: TaskRegistry())) {
         self.container = container
         self.certificatesViewModel = CertificatesViewModel(container: container)
     }

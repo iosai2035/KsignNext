@@ -31,7 +31,7 @@ public final class DependencyContainer {
         keychain: KeychainService = .shared,
         files: FileSystemManager = .shared,
         httpClient: HTTPClient = .shared,
-        taskRegistry: TaskRegistry = TaskRegistry(),
+        taskRegistry: TaskRegistry,
         certificateEngine: CertificateEngineProtocol? = nil,
         provisioningEngine: ProvisioningEngineProtocol? = nil
     ) {
