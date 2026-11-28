@@ -1,164 +1,128 @@
 import Foundation
 
-/// Dependency injection container.
+/// Dependency injection container for the Phase 1 rebuild.
 ///
-/// Repositories are built here (concrete Core Data implementations).
-/// Engines are constructed here by default (coordinator integration —
-/// the builders delivered the real engines, so the container wires
-/// them up); an engine can still be overridden through the initialiser
-/// for tests. The signing engine's certificate resolver reads the
-/// certificate repository; its provisioning resolver re-parses the
-/// `.mobileprovision` files in the workspace Certificates folder and
-/// matches the profile's stable id (derived from the profile UUID by
-/// `ProvisioningEngine`, so the same profile resolves to the same id
-/// at import time and at signing time).
+/// Wiring only — no business logic lives here. Every resolver throws
+/// (W-5): callers handle failure explicitly instead of silently
+/// receiving `nil`. There are no login / session objects
+/// anywhere in this container (the sign-in stack was deleted in the
+/// rebuild; see `Documentation/Rebuild-2026-11-28.md` §10).
+///
+/// Engines and repositories are built once, in `init`, and shared by
+/// every tab through the `AppCoordinator`. Tests override them through
+/// the initialiser.
 public final class DependencyContainer {
-    public let persistence: PersistenceController
-    public let logs: LogsManager
-    public let keychain: KeychainService
-    public let files: SecureFileManager
-    public let httpClient: HTTPClient
-    public let taskManager: TaskManager
 
-    // Engines (constructed by default; injectable for tests).
-    public var ipaEngine: IPAEngineProtocol
-    public var signingEngine: SigningEngineProtocol
+    // MARK: - Core services (built once)
+
+    public let persistence: PersistenceController
+    public let keychain: KeychainService
+    public let files: FileSystemManager
+    public let httpClient: HTTPClient
+    public let taskRegistry: TaskRegistry
+
+    // MARK: - Engines (constructed by default; injectable for tests)
+
     public var certificateEngine: CertificateEngineProtocol
-    public var machOEngine: MachOEngineProtocol
-    public var downloadEngine: DownloadEngine
-    public var verificationEngine: VerificationEngine
-    public var installationEngine: InstallationEngine
-    public var sourcesEngine: SourcesEngine
-    public var injectionEngine: InjectionEngine
+    public var provisioningEngine: ProvisioningEngineProtocol
 
     public init(
         persistence: PersistenceController = .shared,
-        logs: LogsManager = .shared,
         keychain: KeychainService = .shared,
-        files: SecureFileManager = .shared,
+        files: FileSystemManager = .shared,
         httpClient: HTTPClient = .shared,
-        taskManager: TaskManager = .shared,
-        ipaEngine: IPAEngineProtocol? = nil,
-        signingEngine: SigningEngineProtocol? = nil,
+        taskRegistry: TaskRegistry = TaskRegistry(),
         certificateEngine: CertificateEngineProtocol? = nil,
-        machOEngine: MachOEngineProtocol? = nil,
-        downloadEngine: DownloadEngine? = nil,
-        verificationEngine: VerificationEngine? = nil,
-        installationEngine: InstallationEngine? = nil,
-        sourcesEngine: SourcesEngine? = nil,
-        injectionEngine: InjectionEngine? = nil
+        provisioningEngine: ProvisioningEngineProtocol? = nil
     ) {
         self.persistence = persistence
-        self.logs = logs
         self.keychain = keychain
         self.files = files
         self.httpClient = httpClient
-        self.taskManager = taskManager
-        self.ipaEngine = ipaEngine ?? IPAEngine()
+        self.taskRegistry = taskRegistry
         self.certificateEngine = certificateEngine ?? CertificateEngine(keychain: keychain, fileManager: files)
-        self.machOEngine = machOEngine ?? MachOEngine()
-        self.downloadEngine = downloadEngine ?? {
-            // The concurrency limit is a Settings value, not a
-            // constant: the toggle shows 2 on a fresh install, so an
-            // unset key means 2 here too.
-            let saved = UserDefaults.standard.integer(forKey: "ksign.downloads.maxConcurrent")
-            return DownloadEngine(maxConcurrentDownloads: saved == 0 ? 2 : saved)
-        }()
-        self.verificationEngine = verificationEngine ?? VerificationEngine()
-        self.installationEngine = installationEngine ?? InstallationEngine(server: NIOInstallationServer())
-        self.sourcesEngine = sourcesEngine ?? SourcesEngine(downloadEngine: self.downloadEngine)
-        self.injectionEngine = injectionEngine ?? InjectionEngine(adapter: ZsignAdapter(backend: ZsignBridgeBackend()))
-        if let signingEngine {
-            self.signingEngine = signingEngine
-        } else {
-            let certificateRepository = CoreDataCertificateRepository(persistence: persistence)
-            let provisioningEngine = ProvisioningEngine(keychain: keychain, fileManager: files)
-            // Capture only Sendable values in the @Sendable resolvers:
-            // the certificates directory URL, not `self` or SecureFileManager.
-            let certificatesDir = try? files.folder(.certificates)
-            self.signingEngine = SigningEngine(
-                certificateResolver: { id in try? await certificateRepository.fetch(id: id) },
-                provisioningResolver: { id in
-                    guard let certificatesDir else { return nil }
-                    let urls = (try? FileManager.default.contentsOfDirectory(
-                        at: certificatesDir, includingPropertiesForKeys: nil)) ?? []
-                    for url in urls where url.pathExtension.lowercased() == "mobileprovision" {
-                        if let profile = try? await provisioningEngine.parseProvisioningProfile(at: url),
-                           profile.id == id {
-                            return profile
-                        }
-                    }
-                    return nil
-                },
-                passwordResolver: { [keychain] id in
-                    try? keychain.readPassword(account: CertificateEngine.passwordAccount(for: id))
-                }
-            )
-        }
+        self.provisioningEngine = provisioningEngine ?? ProvisioningEngine(keychain: keychain, fileManager: files)
     }
 
     // MARK: - Repositories (lazy, concrete Core Data)
 
-    public lazy var importedApplicationRepository: ImportedApplicationRepository =
-        CoreDataImportedApplicationRepository(persistence: persistence)
-
-    public lazy var signedApplicationRepository: SignedApplicationRepository =
-        CoreDataSignedApplicationRepository(persistence: persistence)
-
     public lazy var certificateRepository: CertificateRepository =
         CoreDataCertificateRepository(persistence: persistence)
 
-    public lazy var sourceRepository: SourceRepository =
-        CoreDataSourceRepository(persistence: persistence)
+    public lazy var provisioningProfileRepository: ProvisioningProfileRepository =
+        CoreDataProvisioningProfileRepository(persistence: persistence)
 
-    public lazy var downloadTaskRepository: DownloadTaskRepository =
-        CoreDataDownloadTaskRepository(persistence: persistence)
+    // MARK: - Throwing resolvers (W-5)
 
-    public lazy var logRepository: LogRepository =
-        LogsManagerLogRepository(logs: logs)
+    /// Returns the certificate engine. The `throws` is call-site
+    /// discipline (W-5): a resolver that can fail must be handled,
+    /// never silently nilled. Nothing in `init` can leave this unset.
+    public func resolveCertificateEngine() throws -> CertificateEngineProtocol {
+        certificateEngine
+    }
 
-    // MARK: - Engine accessors
+    public func resolveProvisioningEngine() throws -> ProvisioningEngineProtocol {
+        provisioningEngine
+    }
 
-    public func requireIPAEngine() -> IPAEngineProtocol { ipaEngine }
-    public func requireSigningEngine() -> SigningEngineProtocol { signingEngine }
-    public func requireCertificateEngine() -> CertificateEngineProtocol { certificateEngine }
-    public func requireMachOEngine() -> MachOEngineProtocol { machOEngine }
-    public func requireDownloadEngine() -> DownloadEngine { downloadEngine }
-    public func requireVerificationEngine() -> VerificationEngine { verificationEngine }
-    public func requireInstallationEngine() -> InstallationEngine { installationEngine }
+    public func resolveCertificateRepository() throws -> CertificateRepository {
+        certificateRepository
+    }
+
+    public func resolveProvisioningProfileRepository() throws -> ProvisioningProfileRepository {
+        provisioningProfileRepository
+    }
+
+    public func resolveKeychain() throws -> KeychainService {
+        keychain
+    }
+
+    public func resolveFileSystem() throws -> FileSystemManager {
+        files
+    }
 
     // MARK: - Use-case factories
 
-    public func makeImportIPAUseCase() -> ImportIPAUseCase {
-        ImportIPAUseCase(ipaEngine: requireIPAEngine(), repository: importedApplicationRepository, logs: logs)
-    }
-
-    public func makeSignApplicationUseCase() -> SignApplicationUseCase {
-        SignApplicationUseCase(
-            signingEngine: requireSigningEngine(),
-            certificateRepository: certificateRepository,
-            signedRepository: signedApplicationRepository,
-            logs: logs,
-            taskManager: taskManager
+    public func makeImportCertificateUseCase() throws -> ImportCertificateUseCase {
+        ImportCertificateUseCase(
+            engine: try resolveCertificateEngine(),
+            repository: try resolveCertificateRepository(),
+            keychain: keychain,
+            fileSystem: files,
+            logger: AppLogger.shared
         )
     }
 
-    public func makeVerifySignatureUseCase() -> VerifySignatureUseCase {
-        VerifySignatureUseCase(signingEngine: requireSigningEngine(), logs: logs)
+    public func makeImportProvisioningProfileUseCase() throws -> ImportProvisioningProfileUseCase {
+        ImportProvisioningProfileUseCase(
+            engine: try resolveProvisioningEngine(),
+            repository: try resolveProvisioningProfileRepository(),
+            fileSystem: files,
+            logger: AppLogger.shared
+        )
     }
 
-    public lazy var appleIDSessionStore: AppleIDSessionStore =
-        AppleIDSessionStore(keychain: keychain)
+    public func makeDeleteCertificateUseCase() throws -> DeleteCertificateUseCase {
+        DeleteCertificateUseCase(
+            repository: try resolveCertificateRepository(),
+            keychain: keychain,
+            fileSystem: files,
+            logger: AppLogger.shared
+        )
+    }
 
-    /// ONE shared sign-in use case for the whole app. It owns the
-    /// retained signed-in client (the live Rust session the
-    /// developer-services calls run on), so the Settings sign-in
-    /// and the Installation real refresh must share this instance
-    /// — a fresh use case per call would drop the live client.
-    public lazy var appleIDSignInUseCase: AppleIDSignInUseCase =
-        AppleIDSignInUseCase(store: appleIDSessionStore)
+    public func makeDeleteProvisioningProfileUseCase() throws -> DeleteProvisioningProfileUseCase {
+        DeleteProvisioningProfileUseCase(
+            repository: try resolveProvisioningProfileRepository(),
+            fileSystem: files,
+            logger: AppLogger.shared
+        )
+    }
 
-    public func makeAppleIDSignInUseCase() -> AppleIDSignInUseCase {
-        appleIDSignInUseCase
+    public func makeFetchExpiringProfilesUseCase() throws -> FetchExpiringProfilesUseCase {
+        FetchExpiringProfilesUseCase(
+            repository: try resolveProvisioningProfileRepository(),
+            engine: try resolveProvisioningEngine()
+        )
     }
 }

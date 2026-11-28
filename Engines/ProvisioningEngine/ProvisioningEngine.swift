@@ -1,48 +1,25 @@
 import Foundation
 import CryptoKit
 
-/// Protocol for the provisioning-profile engine. (No protocol for this
-/// engine existed in `Domain/Protocols/`; it is defined here so callers
-/// can depend on the abstraction rather than the concrete type.)
-public protocol ProvisioningEngineProtocol: AnyObject, Sendable {
-    /// Parses a .mobileprovision file into a `ProvisioningModel`.
-    func parseProvisioningProfile(at url: URL) async throws -> ProvisioningModel
-
-    /// Imports a profile into the workspace and returns the stored model.
-    func importProvisioningProfile(at url: URL) async throws -> ProvisioningModel
-
-    /// Throws unless `certificate` and `profile` belong together
-    /// (same team, certificate listed in the profile, neither expired).
-    func validatePair(certificate: CertificateModel, profile: ProvisioningModel) async throws
-
-    /// `true` when `bundleID` is covered by the profile's App ID
-    /// (exact match or `TEAMID.*` wildcard).
-    func allows(bundleID: String, profile: ProvisioningModel) -> Bool
-
-    /// `true` when `deviceUDID` is listed in the profile
-    /// (development / ad-hoc profiles only; App Store profiles list none).
-    func deviceIsProvisioned(_ deviceUDID: String, in profile: ProvisioningModel) -> Bool
-}
-
 /// Parses .mobileprovision profiles.
 ///
 /// A .mobileprovision file is a PKCS#7 (CMS) envelope wrapping an XML
 /// plist. This engine extracts the plist by scanning for the `<?xml`
-/// marker and decoding up to `</plist>` — it does NOT attempt full CMS
-/// signature verification, so a parsed profile is treated as
+/// marker and decoding up to the LAST `</plist>` — it does NOT attempt
+/// full CMS signature verification, so a parsed profile is treated as
 /// structurally valid but its signature is unverified; callers must not
 /// present it as Apple-verified.
 public final class ProvisioningEngine: ProvisioningEngineProtocol, @unchecked Sendable {
 
     private let keychain: KeychainService
-    private let fileManager: SecureFileManager
+    private let fileManager: FileSystemManager
 
     /// Maximum profile size accepted (5 MiB).
     private static let maxProfileBytes = 5 * 1024 * 1024
 
     public init(
         keychain: KeychainService = .shared,
-        fileManager: SecureFileManager = .shared
+        fileManager: FileSystemManager = .shared
     ) {
         self.keychain = keychain
         self.fileManager = fileManager
@@ -54,7 +31,9 @@ public final class ProvisioningEngine: ProvisioningEngineProtocol, @unchecked Se
         let data = try readFile(at: url, limit: Self.maxProfileBytes)
         let plistData = try extractPlistData(from: data, sourceName: url.lastPathComponent)
         let raw = try decodePlist(plistData, sourceName: url.lastPathComponent)
-        return try model(from: raw, fileURL: url)
+        var model = try model(from: raw, fileURL: url)
+        model.dataHash = sha256Hex(of: data)
+        return model
     }
 
     public func importProvisioningProfile(at url: URL) async throws -> ProvisioningModel {
@@ -70,6 +49,7 @@ public final class ProvisioningEngine: ProvisioningEngineProtocol, @unchecked Se
             throw AppError.certificate(.provisioningInvalid(reason: "The profile could not be copied into the workspace: \(error.localizedDescription)"))
         }
         model.fileURL = destination
+        model.dataHash = sha256Hex(of: data)
         return model
     }
 
@@ -87,10 +67,12 @@ public final class ProvisioningEngine: ProvisioningEngineProtocol, @unchecked Se
             throw AppError.certificate(.expired(expirationDate: expiration))
         }
         if !profile.certificates.isEmpty {
+            // Both sides are SHA-256 hex; compare case-insensitively so
+            // a differently-cased stored fingerprint still matches.
             let fingerprint = certificate.fingerprint.lowercased()
             let matches = profile.certificates.contains { base64DER in
                 guard let der = Data(base64Encoded: base64DER) else { return false }
-                return sha256Hex(of: der) == fingerprint
+                return sha256Hex(of: der).lowercased() == fingerprint
             }
             if !matches {
                 throw AppError.certificate(.provisioningMismatch(
@@ -112,12 +94,15 @@ public final class ProvisioningEngine: ProvisioningEngineProtocol, @unchecked Se
 
     /// Finds the XML plist inside the CMS envelope. The envelope is a
     /// DER structure; the plist is embedded as its content, so the
-    /// first `<?xml` … `</plist>` span is the document.
+    /// span from the first `<?xml` to the LAST `</plist>` is the
+    /// document. The last occurrence is used deliberately: a plist
+    /// string value may itself contain the literal `</plist>`, and
+    /// stopping at the first occurrence would truncate the document.
     private func extractPlistData(from data: Data, sourceName: String) throws -> Data {
         let xmlMarker = Data("<?xml".utf8)
         let plistEnd = Data("</plist>".utf8)
         guard let start = data.range(of: xmlMarker)?.lowerBound,
-              let end = data.range(of: plistEnd, options: [], in: start..<data.endIndex)?.upperBound else {
+              let end = data.range(of: plistEnd, options: .backwards, in: start..<data.endIndex)?.upperBound else {
             throw AppError.certificate(.provisioningInvalid(reason: "“\(sourceName)” contains no embedded XML plist."))
         }
         return data[start..<end]
@@ -164,13 +149,24 @@ public final class ProvisioningEngine: ProvisioningEngineProtocol, @unchecked Se
 
         init(from decoder: Decoder) throws {
             let container = try decoder.singleValueContainer()
-            if let value = try? container.decode(String.self) { self = .string(value); return }
-            if let value = try? container.decode(Bool.self) { self = .bool(value); return }
-            if let value = try? container.decode([PlistValue].self) { self = .array(value); return }
-            if let value = try? container.decode([String: PlistValue].self) { self = .dict(value); return }
+            if let value = Self.attempt(String.self, from: container) { self = .string(value); return }
+            if let value = Self.attempt(Bool.self, from: container) { self = .bool(value); return }
+            if let value = Self.attempt([PlistValue].self, from: container) { self = .array(value); return }
+            if let value = Self.attempt([String: PlistValue].self, from: container) { self = .dict(value); return }
             throw DecodingError.typeMismatch(PlistValue.self, DecodingError.Context(
                 codingPath: decoder.codingPath,
                 debugDescription: "Unsupported entitlement plist value."))
+        }
+
+        /// Tries one decoding; a failure means "not this type", not an
+        /// error to surface — written as do/catch so no throwing call
+        /// is ever silenced into `nil` elsewhere.
+        private static func attempt<T: Decodable>(_ type: T.Type, from container: SingleValueDecodingContainer) -> T? {
+            do {
+                return try container.decode(type)
+            } catch {
+                return nil
+            }
         }
 
         var displayString: String {
@@ -227,7 +223,7 @@ public final class ProvisioningEngine: ProvisioningEngineProtocol, @unchecked Se
         // Stable id: derive it from the profile's own UUID when possible,
         // so the same profile parsed twice (e.g. at import and at signing)
         // resolves to the same id. Falls back to a fresh UUID otherwise.
-        return ProvisioningModel(
+        var model = ProvisioningModel(
             id: UUID(uuidString: uuid) ?? UUID(),
             name: name,
             uuid: uuid,
@@ -242,6 +238,14 @@ public final class ProvisioningEngine: ProvisioningEngineProtocol, @unchecked Se
             certificates: certificates,
             fileURL: fileURL
         )
+        // Phase 1 fields: a single App ID, so the prefix list holds
+        // exactly the bundle identifier; profiles carry no explicit
+        // platform field, so `platform` stays nil. `dataHash` (SHA-256
+        // of the raw file bytes) is set by the caller, which owns the
+        // raw bytes.
+        model.bundleIdentifierPrefixes = [model.bundleIdentifier]
+        model.platform = nil
+        return model
     }
 
     /// Heuristic kind from entitlements + device list (Apple documents no

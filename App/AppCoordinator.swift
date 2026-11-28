@@ -1,42 +1,68 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Tabs of the app. Raw values are stable for deep links (ksign://tab/<rawValue>).
+/// The six bottom tabs (user order 2026-11-28 15:00). Raw values are
+/// stable identifiers; they are not deep-link hosts.
 enum AppTab: String, CaseIterable, Identifiable {
-    case dashboard, applications, certificates, signing, installation, tweaks, downloads, sources, files, logs, settings
+    case dashboard, applications, sources, downloads, files, settings
     var id: String { rawValue }
     var titleKey: String { "tab.\(rawValue)" }
 }
 
-/// A file handed to the app via Open-In / document types (.ipa / .ksign / .p12 / .mobileprovision).
+/// Push destinations for every tab's `NavigationStack`. The
+/// coordinator owns the single shared `path`; destinations are
+/// resolved here so any tab can push the manager, a detail, or a
+/// Settings sub-screen.
+enum AppRoute: Hashable {
+    case certificateDetail(UUID)
+    case profileDetail(UUID)
+    case storage
+    case diagnostics
+    case about
+}
+
+/// A file handed to the app via Open-In / document types
+/// (.ipa / .ksign / .p12 / .mobileprovision).
 struct IncomingFile: Identifiable, Equatable {
     let id = UUID()
     let url: URL
     var fileName: String { url.lastPathComponent }
     var kindDescription: String {
         switch url.pathExtension.lowercased() {
-        case "ipa": return NSLocalizedString("file.kind.ipa", comment: "")
-        case "ksign": return NSLocalizedString("file.kind.ksign", comment: "")
-        case "p12": return NSLocalizedString("file.kind.p12", comment: "")
-        case "mobileprovision": return NSLocalizedString("file.kind.mobileprovision", comment: "")
-        default: return NSLocalizedString("file.kind.unknown", comment: "")
+        case "ipa": return Loc.string("file.kind.ipa")
+        case "ksign": return Loc.string("file.kind.ksign")
+        case "p12": return Loc.string("file.kind.p12")
+        case "mobileprovision": return Loc.string("file.kind.mobileprovision")
+        default: return Loc.string("file.kind.unknown")
         }
     }
     static func == (lhs: IncomingFile, rhs: IncomingFile) -> Bool { lhs.id == rhs.id }
 }
 
 enum DeepLinkError: LocalizedError {
-    case unsupportedScheme, unknownTab(String), malformedURL
+    case unsupportedScheme
+    case unknownHost(String)
+    case malformedURL
+    case missingURLParameter
     var errorDescription: String? {
         switch self {
-        case .unsupportedScheme: return NSLocalizedString("deeplink.error.scheme", comment: "")
-        case .unknownTab(let t): return String(format: NSLocalizedString("deeplink.error.tab", comment: ""), t)
-        case .malformedURL: return NSLocalizedString("deeplink.error.malformed", comment: "")
+        case .unsupportedScheme: return Loc.string("deeplink.error.scheme")
+        case .unknownHost(let host): return Loc.string("deeplink.error.host", host)
+        case .malformedURL: return Loc.string("deeplink.error.malformed")
+        case .missingURLParameter: return Loc.string("deeplink.error.missingUrl")
         }
     }
 }
 
-/// Owns navigation state, deep links (ksign://) and incoming files.
+/// Single central router: 6 tabs + side menu, sheets, `ksignnext://`
+/// deep links and Open-In routing (contract §C.6).
+///
+/// Navigation note: the contract specifies ONE `path` owned here.
+/// A single path shared by six stacks would leak one tab's stack
+/// into another, so `selectTab` always resets it — a tab switch
+/// starts at its root. (Gemini pass 1 advised per-tab paths instead;
+/// the contract wins and this reset is the mitigation. See the
+/// Wave 2 build log.)
 @MainActor
 final class AppCoordinator: ObservableObject {
     /// The single dependency container for the app, created once at launch
@@ -44,246 +70,232 @@ final class AppCoordinator: ObservableObject {
     /// engines and use cases are built exactly once).
     let container: DependencyContainer
 
+    /// The shared certificates view model: the manager, the side menu
+    /// and the root-level P12 password sheet all observe this one
+    /// instance, so an import from any entry point refreshes the same
+    /// list.
+    let certificatesViewModel: CertificatesViewModel
+
     init(container: DependencyContainer = DependencyContainer()) {
         self.container = container
+        self.certificatesViewModel = CertificatesViewModel(container: container)
+    }
+
+    enum SheetDestination: Identifiable {
+        case p12PasswordPrompt(URL)
+        case diagnostics
+        var id: String {
+            switch self {
+            case .p12PasswordPrompt(let url): return "p12-\(url.path)"
+            case .diagnostics: return "diagnostics"
+            }
+        }
     }
 
     @Published var selectedTab: AppTab = .dashboard
-    @Published var pendingFileOpen: IncomingFile?
-    @Published var showDeepLinkError = false
-    @Published var deepLinkError: String?
-    /// Inbox copy of an incoming .p12 awaiting its password (W-1).
-    /// CertificatesView bridges this into its view model and opens
-    /// the password sheet. It points at the Inbox copy, never at the
-    /// Certificates/ copy: `importFile` deletes its destination
-    /// before copying, so pointing it at the moved file would delete
-    /// the file and then fail to copy it.
+    @Published var sideMenuOpen = false
+    @Published var path = NavigationPath()
+    @Published var presentedSheet: SheetDestination?
+    /// The Certificates manager is a full-screen cover (not a tab
+    /// push): it is reachable from every tab and from deep links,
+    /// and a cover can never be pushed twice onto a tab's stack.
+    @Published var showCertificatesManager = false
+    @Published var showError = false
+    @Published var errorMessage: String?
+    @Published var showInfo = false
+    @Published var infoMessage: String?
+    /// Incoming .p12 awaiting its password (W-1). Points at the
+    /// Certificates/ copy made by `handleIncomingFile`; the password
+    /// sheet's import registers it and removes that plain copy.
     @Published var pendingP12ImportURL: URL?
     /// Bumped whenever the coordinator drops a file into
-    /// Certificates/ (W-1), so CertificatesView refreshes even when
-    /// already on that tab.
+    /// Certificates/, so CertificatesView refreshes even when already
+    /// on that screen.
     @Published var certificatesChangedToken = UUID()
+    /// Bumped whenever the coordinator drops a file into Inbox/, so
+    /// FilesView refreshes even when already on that tab.
+    @Published var filesChangedToken = UUID()
 
-    /// Loads the Core Data stores once at launch. A failure is shown in
-    /// the existing error alert instead of crashing.
+    // MARK: - Tabs + side menu
+
+    func selectTab(_ tab: AppTab) {
+        selectedTab = tab
+        // The path is shared by all six stacks: reset it so the
+        // previous tab's pushed screens never appear in this tab.
+        path = NavigationPath()
+        sideMenuOpen = false
+    }
+
+    func openSideMenu() { sideMenuOpen = true }
+    func closeSideMenu() { sideMenuOpen = false }
+
+    /// Opens the side menu's Certificates manager: closes the menu
+    /// and presents the manager as a full-screen cover.
+    func openCertificatesManager() {
+        sideMenuOpen = false
+        showCertificatesManager = true
+    }
+
+    // MARK: - Persistence
+
+    /// Loads the Core Data stores once at launch. A failure is shown
+    /// in the error alert instead of crashing.
     func loadPersistence() async {
         do {
             try await container.persistence.load()
         } catch {
-            deepLinkError = error.localizedDescription
-            showDeepLinkError = true
+            showErrorMessage(error.localizedDescription)
         }
     }
 
-    /// ksign://tab/applications  |  ksign://sign  |  ksign://open?file=...
-    /// file:// URLs route to `handleIncomingFile`. Deep links to screens
-    /// that moved under Settings (tweaks, downloads, sources, files,
-    /// logs, about) select the Settings tab instead of failing.
+    // MARK: - Deep links (`ksignnext://` only)
+
+    /// `ksignnext://source/add?url=…` → Sources tab + Phase 3 alert.
+    /// `ksignnext://install/remote?url=…` → Downloads tab + Phase 3
+    /// alert. `ksignnext://certificates` → side menu → manager.
+    /// Unknown scheme/host, malformed URL or a missing `url`
+    /// parameter → error alert with the specific reason, never a
+    /// silent drop. `file://` URLs route to `handleIncomingFile`.
+    /// There is no `ksign://` handling: that scheme belongs to the
+    /// reference app and would collide if both apps are installed.
     func handleOpenURL(_ url: URL) {
         if url.scheme == "file" { handleIncomingFile(url); return }
-        guard url.scheme == "ksign" else { fail(.unsupportedScheme); return }
-        guard let host = url.host else { fail(.malformedURL); return }
+        guard url.scheme == "ksignnext" else { fail(.unsupportedScheme); return }
+        guard let host = url.host, !host.isEmpty else { fail(.malformedURL); return }
         switch host {
-        case "tab":
-            let name = url.pathComponents.dropFirst().first ?? ""
-            routeTabLink(name)
-        case "sign":
-            selectedTab = .signing
-        case "open":
-            guard let fileValue = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-                .queryItems?.first(where: { $0.name == "file" })?.value,
-                !fileValue.isEmpty else { fail(.malformedURL); return }
-            let fileURL: URL
-            if fileValue.hasPrefix("file:") {
-                guard let parsed = URL(string: fileValue) else { fail(.malformedURL); return }
-                fileURL = parsed
-            } else {
-                fileURL = URL(fileURLWithPath: fileValue)
+        case "source":
+            guard url.pathComponents.dropFirst().first == "add" else { fail(.unknownHost(host)); return }
+            guard let value = queryValue(url, name: "url"), !value.isEmpty else {
+                fail(.missingURLParameter)
+                return
             }
-            handleIncomingFile(fileURL)
-        case "applications", "certificates", "settings":
-            selectedTab = AppTab(rawValue: host) ?? .dashboard
-        case "downloads", "tweaks", "sources", "files", "logs", "about":
-            selectedTab = .settings
+            _ = value
+            selectTab(.sources)
+            showInfoMessage(Loc.string("deeplink.phase3.source"))
+        case "install":
+            guard url.pathComponents.dropFirst().first == "remote" else { fail(.unknownHost(host)); return }
+            guard let value = queryValue(url, name: "url"), !value.isEmpty else {
+                fail(.missingURLParameter)
+                return
+            }
+            _ = value
+            selectTab(.downloads)
+            showInfoMessage(Loc.string("deeplink.phase3.install"))
+        case "certificates":
+            openCertificatesManager()
         default:
-            fail(.unknownTab(host))
+            fail(.unknownHost(host))
         }
     }
 
-    /// Routes a `ksign://tab/<name>` link. Moved screens live under
-    /// Settings now, so their links select Settings; anything else must
-    /// be a real tab or it is an error.
-    private func routeTabLink(_ name: String) {
-        switch name {
-        case "tweaks", "downloads", "sources", "files", "logs", "about":
-            selectedTab = .settings
-        default:
-            guard let tab = AppTab(rawValue: name) else { fail(.unknownTab(name)); return }
-            selectedTab = tab
-        }
+    private func queryValue(_ url: URL, name: String) -> String? {
+        URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == name })?.value
     }
 
-    /// Called by the scene delegate / onOpenURL for document-type opens.
-    /// Security-scoped URLs (Open-In) get scoped access; plain file paths
-    /// (e.g. from `ksign://open?file=/path`) are not security-scoped, so
-    /// a `false` from `startAccessingSecurityScopedResource` must not
-    /// drop them — only scoped URLs are stopped again.
+    // MARK: - Open-In routing (W-1 fix: the file lands somewhere real)
+
+    /// Called by `onOpenURL` for document-type opens.
+    /// Security-scoped URLs (Open-In) get scoped access; plain file
+    /// paths are not security-scoped, so a `false` from
+    /// `startAccessingSecurityScopedResource` must not drop them —
+    /// only scoped URLs are stopped again.
     func handleIncomingFile(_ url: URL) {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         guard FileManager.default.fileExists(atPath: url.path) else {
-            deepLinkError = NSLocalizedString("error.file.access", comment: "")
-            showDeepLinkError = true
+            showErrorMessage(Loc.string("error.file.access"))
             return
         }
-        let ext = url.pathExtension.lowercased()
-        guard ["ipa", "ksign", "p12", "mobileprovision"].contains(ext) else {
-            deepLinkError = NSLocalizedString("file.error.unsupported", comment: "")
-            showDeepLinkError = true
-            return
-        }
-        pendingFileOpen = IncomingFile(url: url)
-        switch ext {
-        case "p12", "mobileprovision": selectedTab = .certificates
-        default: selectedTab = .applications
-        }
-    }
-
-    /// Copies the incoming file into the app workspace (Documents/Inbox),
-    /// then routes it by extension (W-1): .ipa through the import use
-    /// case, .p12 into Certificates/ with the password sheet, and
-    /// .mobileprovision into Certificates/ with a refresh. Failures are
-    /// surfaced in the existing error alert instead of silently
-    /// dropping the file; the sheet is cleared in all cases.
-    func importIncomingFile(_ item: IncomingFile) {
-        let fm = FileManager.default
-        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            deepLinkError = NSLocalizedString("error.documents.unavailable", comment: "")
-            showDeepLinkError = true
-            pendingFileOpen = nil
-            return
-        }
-        let inbox = docs.appendingPathComponent("Inbox", isDirectory: true)
-        do {
-            try fm.createDirectory(at: inbox, withIntermediateDirectories: true)
-        } catch {
-            deepLinkError = error.localizedDescription
-            showDeepLinkError = true
-            pendingFileOpen = nil
-            return
-        }
-        let dest = inbox.appendingPathComponent(item.fileName)
-        do {
-            if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
-            try fm.copyItem(at: item.url, to: dest)
-        } catch {
-            deepLinkError = error.localizedDescription
-            showDeepLinkError = true
-            pendingFileOpen = nil
-            return
-        }
-        pendingFileOpen = nil
-        switch item.url.pathExtension.lowercased() {
-        case "ipa":
-            Task { await importIncomingIPA(dest) }
+        switch url.pathExtension.lowercased() {
         case "p12":
-            importIncomingP12(dest)
+            importIncomingP12(url)
         case "mobileprovision":
-            importIncomingProvision(dest)
+            // The import is async and needs scoped access across the
+            // await, so it re-starts access inside its own Task.
+            Task { await importIncomingProvision(url) }
         default:
-            break
+            // .ipa / .tipa / anything else: ordinary file → Inbox/
+            // (stub for the Phase 3 locker import path). No
+            // "unsupported" alert (blueprint §10.9).
+            importIncomingFile(IncomingFile(url: url))
         }
     }
 
-    /// Validates the IPA and records it, then copies it into
-    /// Documents/ImportedApps, where the app list and the Signing
-    /// Center look for apps (mirrors ApplicationsViewModel.importIPA).
-    /// The list refreshes when the Applications tab appears.
-    private func importIncomingIPA(_ url: URL) async {
+    /// Copies the incoming file into the workspace `Inbox/` folder,
+    /// bumps `filesChangedToken` and selects the Files tab. Every
+    /// copy failure surfaces in the error alert.
+    func importIncomingFile(_ item: IncomingFile) {
         do {
-            _ = try await container.makeImportIPAUseCase().execute(url: url)
-            guard let destDir = Workspace.folder("ImportedApps") else {
-                deepLinkError = NSLocalizedString("error.documents.unavailable", comment: "")
-                showDeepLinkError = true
-                return
-            }
-            let dest = destDir.appendingPathComponent(url.lastPathComponent)
+            let inbox = try container.files.folder(.inbox)
+            let dest = inbox.appendingPathComponent(item.fileName)
             if FileManager.default.fileExists(atPath: dest.path) {
                 try FileManager.default.removeItem(at: dest)
             }
-            try FileManager.default.copyItem(at: url, to: dest)
+            try FileManager.default.copyItem(at: item.url, to: dest)
         } catch {
-            deepLinkError = error.localizedDescription
-            showDeepLinkError = true
+            showErrorMessage(error.localizedDescription)
+            return
         }
+        filesChangedToken = UUID()
+        selectTab(.files)
     }
 
-    /// Copies the .p12 into Certificates/ (so it is visible in the
-    /// list) and publishes the Inbox copy for the password sheet:
-    /// the sheet's `importFile` copies from that URL into
-    /// Certificates/ and registers the certificate with its password.
+    /// Copies the .p12 into `Certificates/` (so it is visible in the
+    /// list), publishes it for the password sheet, opens the side
+    /// menu → Certificates manager, and opens the password sheet.
+    /// The sheet's import registers the certificate and removes this
+    /// plain copy afterwards.
     private func importIncomingP12(_ url: URL) {
-        guard let certsDir = Workspace.folder("Certificates") else {
-            deepLinkError = NSLocalizedString("certs.error.storage", comment: "")
-            showDeepLinkError = true
-            return
-        }
-        let dest = certsDir.appendingPathComponent(url.lastPathComponent)
         do {
+            let certsDir = try container.files.folder(.certificates)
+            let dest = certsDir.appendingPathComponent(url.lastPathComponent)
             if FileManager.default.fileExists(atPath: dest.path) {
                 try FileManager.default.removeItem(at: dest)
             }
             try FileManager.default.copyItem(at: url, to: dest)
+            certificatesChangedToken = UUID()
+            pendingP12ImportURL = dest
         } catch {
-            deepLinkError = error.localizedDescription
-            showDeepLinkError = true
+            showErrorMessage(error.localizedDescription)
             return
         }
-        certificatesChangedToken = UUID()
-        pendingP12ImportURL = url
+        openCertificatesManager()
+        if let pending = pendingP12ImportURL {
+            presentedSheet = .p12PasswordPrompt(pending)
+        }
     }
 
-    /// Copies the profile into Certificates/ and refreshes the list.
-    private func importIncomingProvision(_ url: URL) {
-        guard let certsDir = Workspace.folder("Certificates") else {
-            deepLinkError = NSLocalizedString("certs.error.storage", comment: "")
-            showDeepLinkError = true
-            return
-        }
-        let dest = certsDir.appendingPathComponent(url.lastPathComponent)
+    /// Runs the profile import use case (which rejects an
+    /// already-expired profile before any file copy), bumps the
+    /// refresh token and opens the side menu → Certificates manager.
+    private func importIncomingProvision(_ url: URL) async {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
-            if FileManager.default.fileExists(atPath: dest.path) {
-                try FileManager.default.removeItem(at: dest)
-            }
-            try FileManager.default.copyItem(at: url, to: dest)
+            let useCase = try container.makeImportProvisioningProfileUseCase()
+            _ = try await useCase.execute(fileURL: url)
         } catch {
-            deepLinkError = error.localizedDescription
-            showDeepLinkError = true
+            showErrorMessage(error.localizedDescription)
             return
         }
         certificatesChangedToken = UUID()
+        openCertificatesManager()
     }
 
-    func selectTab(_ tab: AppTab) { selectedTab = tab }
+    // MARK: - Alerts
+
+    func showErrorMessage(_ message: String) {
+        errorMessage = message
+        showError = true
+    }
+
+    func showInfoMessage(_ message: String) {
+        infoMessage = message
+        showInfo = true
+    }
 
     private func fail(_ error: DeepLinkError) {
-        deepLinkError = error.localizedDescription
-        showDeepLinkError = true
-    }
-}
-
-/// Shared helpers for views that read the app Documents workspace.
-enum Workspace {
-    static var documents: URL? {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-    }
-    static func folder(_ name: String) -> URL? {
-        guard let docs = documents else { return nil }
-        let url = docs.appendingPathComponent(name, isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
-    }
-    static func fileSizeString(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        showErrorMessage(error.localizedDescription)
     }
 }

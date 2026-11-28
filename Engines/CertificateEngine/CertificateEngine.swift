@@ -15,14 +15,14 @@ import CryptoKit
 public final class CertificateEngine: CertificateEngineProtocol, @unchecked Sendable {
 
     private let keychain: KeychainService
-    private let fileManager: SecureFileManager
+    private let fileManager: FileSystemManager
 
     /// Maximum P12 / certificate file size accepted (10 MiB).
     private static let maxCertificateBytes = 10 * 1024 * 1024
 
     public init(
         keychain: KeychainService = .shared,
-        fileManager: SecureFileManager = .shared
+        fileManager: FileSystemManager = .shared
     ) {
         self.keychain = keychain
         self.fileManager = fileManager
@@ -69,9 +69,12 @@ public final class CertificateEngine: CertificateEngineProtocol, @unchecked Send
             throw AppError.certificate(.expired(expirationDate: expiration))
         }
         if !profile.certificates.isEmpty {
+            // Both sides are SHA-256 hex; compare case-insensitively so
+            // a differently-cased stored fingerprint still matches.
+            let fingerprint = certificate.fingerprint.lowercased()
             let matches = profile.certificates.contains { base64DER in
                 guard let der = Data(base64Encoded: base64DER) else { return false }
-                return sha256Hex(of: der) == certificate.fingerprint
+                return sha256Hex(of: der).lowercased() == fingerprint
             }
             if !matches {
                 throw AppError.certificate(.provisioningMismatch(
@@ -105,14 +108,22 @@ public final class CertificateEngine: CertificateEngineProtocol, @unchecked Send
         }
         let account = Self.passwordAccount(for: model.id)
         do {
+            // The password is saved even when it is "" (password-less
+            // P12): the empty password is still the registered secret
+            // for this certificate, and registration must not be skipped.
             try keychain.savePassword(password, account: account)
         } catch {
             // Do not leave an orphaned file behind if the secret cannot be stored.
-            try? FileManager.default.removeItem(at: destination)
+            // Best-effort cleanup: a failure here must not mask the
+            // Keychain error being thrown, so it is swallowed.
+            do {
+                try FileManager.default.removeItem(at: destination)
+            } catch {}
             throw AppError.certificate(.keychainFailure(reason: error.localizedDescription))
         }
         model.fileURL = destination
         model.keychainAccount = account
+        model.isStoredInKeychain = true
         model.status = await status(of: model)
         return model
     }
@@ -202,6 +213,7 @@ public final class CertificateEngine: CertificateEngineProtocol, @unchecked Send
             expirationDate: notAfter,
             fileURL: fileURL
         )
+        model.isStoredInKeychain = false
         model.status = await status(of: model)
         return model
     }
@@ -259,17 +271,22 @@ public final class CertificateEngine: CertificateEngineProtocol, @unchecked Send
         return result
     }
 
+    /// Decodes an OID value (without its tag/length) to dotted form.
+    /// R-M1: arcs accumulate in `UInt64` and an arc larger than
+    /// `Int.max` is rejected with `nil` at the end of that arc, so a
+    /// hostile OID can never trap the process with an integer overflow.
     private static func derOIDString(_ content: Data) -> String? {
         guard !content.isEmpty else { return nil }
         var arcs: [Int] = []
         let first = Int(content[0])
         arcs.append(min(first / 40, 2))
         arcs.append(first - 40 * arcs[0])
-        var value = 0
+        var value: UInt64 = 0
         for byte in content.dropFirst() {
-            value = (value << 7) | (Int(byte) & 0x7F)
+            value = (value << 7) | UInt64(byte & 0x7F)
             if byte & 0x80 == 0 {
-                arcs.append(value)
+                guard value <= UInt64(Int.max) else { return nil }
+                arcs.append(Int(value))   // value <= Int.max, so this is safe
                 value = 0
             }
         }

@@ -5,97 +5,188 @@ import SwiftUI
 @main
 struct KsignNextApp: App {
     @StateObject private var coordinator = AppCoordinator()
-    @AppStorage("ksign.appearance") private var appearanceRaw = "system"
-    @AppStorage("ksign.language") private var language = "en"
 
     init() {
-        // Install the language-overriding bundle class before any
-        // NSLocalizedString lookup, so the first render already uses
-        // the app-selected language (see Localization.swift).
-        Localization.applyLanguage()
+        // W-18: purge stale temp directories at launch, before any
+        // work can depend on them. Best-effort and non-throwing.
+        FileSystemManager.shared.cleanupStaleTempDirectories()
     }
 
     var body: some Scene {
         WindowGroup {
             RootTabView()
-                .id(language)
                 .environmentObject(coordinator)
-                .preferredColorScheme(colorScheme)
-                .environment(\.locale, Locale(identifier: language == "ar" ? "ar" : "en"))
-                .onChange(of: language) { _ in Localization.applyLanguage() }
+                .environmentObject(coordinator.container.taskRegistry)
                 .onOpenURL { url in coordinator.handleOpenURL(url) }
                 .task { await coordinator.loadPersistence() }
         }
     }
-
-    private var colorScheme: ColorScheme? {
-        switch appearanceRaw {
-        case "light": return .light
-        case "dark": return .dark
-        default: return nil
-        }
-    }
 }
 
+/// Root view: 6 bottom tabs (user order 2026-11-28 15:00), the side
+/// menu, the coordinator-driven sheets and alerts, and the global
+/// progress HUD. Each tab owns a `NavigationStack` bound to the
+/// coordinator's single shared path; `selectTab` resets the path so
+/// one tab's pushed screens never leak into another.
 private struct RootTabView: View {
     @EnvironmentObject private var coordinator: AppCoordinator
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
-        TabView(selection: $coordinator.selectedTab) {
-            DashboardView()
-                .tabItem { Label(NSLocalizedString("tab.dashboard", comment: ""), systemImage: "square.grid.2x2") }
-                .tag(AppTab.dashboard)
-            ApplicationsView(container: coordinator.container)
-                .tabItem { Label(NSLocalizedString("tab.applications", comment: ""), systemImage: "app.badge") }
-                .tag(AppTab.applications)
-            SigningCenterView(container: coordinator.container)
-                .tabItem { Label(NSLocalizedString("tab.signing", comment: ""), systemImage: "signature") }
-                .tag(AppTab.signing)
-            CertificatesView(container: coordinator.container)
-                .tabItem { Label(NSLocalizedString("tab.certificates", comment: ""), systemImage: "key.fill") }
-                .tag(AppTab.certificates)
-            InstallationView(container: coordinator.container)
-                .tabItem { Label(NSLocalizedString("tab.installation", comment: ""), systemImage: "arrow.down.app") }
-                .tag(AppTab.installation)
-            SettingsView()
-                .tabItem { Label(NSLocalizedString("tab.settings", comment: ""), systemImage: "gearshape") }
-                .tag(AppTab.settings)
+        Group {
+            if sizeClass == .regular {
+                // iPad: the side menu is a persistent sidebar.
+                HStack(spacing: 0) {
+                    SideMenuView(viewModel: coordinator.certificatesViewModel, isDrawer: false)
+                        .frame(width: 320)
+                    tabView
+                }
+            } else {
+                // iPhone: the side menu is a leading-edge drawer over
+                // the tabs, opened from any tab.
+                ZStack(alignment: .leading) {
+                    tabView
+                    if coordinator.sideMenuOpen {
+                        Color.black.opacity(0.35)
+                            .ignoresSafeArea()
+                            .onTapGesture { coordinator.closeSideMenu() }
+                            .transition(.opacity)
+                        SideMenuView(viewModel: coordinator.certificatesViewModel, isDrawer: true)
+                            .frame(width: 320)
+                            .transition(.move(edge: .leading))
+                    }
+                }
+                .animation(.default, value: coordinator.sideMenuOpen)
+            }
         }
-        .tint(DS.ColorPalette.accentBrand)
-        .alert(NSLocalizedString("alert.error.title", comment: ""), isPresented: $coordinator.showDeepLinkError) {
-            Button(NSLocalizedString("common.ok", comment: ""), role: .cancel) {}
+        .sheet(item: $coordinator.presentedSheet, onDismiss: {
+            // The Open-In .p12 trigger is consumed when its password
+            // sheet closes, so a stale URL can never reopen it.
+            coordinator.pendingP12ImportURL = nil
+        }) { sheet in
+            switch sheet {
+            case .p12PasswordPrompt(let url):
+                P12PasswordSheet(url: url, viewModel: coordinator.certificatesViewModel)
+            case .diagnostics:
+                NavigationStack {
+                    DiagnosticsView()
+                }
+            }
+        }
+        .fullScreenCover(isPresented: $coordinator.showCertificatesManager) {
+            NavigationStack {
+                CertificatesView(viewModel: coordinator.certificatesViewModel)
+                    .navigationDestination(for: AppRoute.self) { route in
+                        appRouteView(route)
+                    }
+            }
+        }
+        .alert(Loc.string("alert.error.title"), isPresented: $coordinator.showError) {
+            Button(Loc.string("common.ok"), role: .cancel) {
+                coordinator.errorMessage = nil
+            }
         } message: {
-            Text(coordinator.deepLinkError ?? "")
+            Text(coordinator.errorMessage ?? "")
         }
-        .sheet(item: $coordinator.pendingFileOpen) { item in
-            FileOpenSheet(item: item)
+        .alert(Loc.string("common.notice"), isPresented: $coordinator.showInfo) {
+            Button(Loc.string("common.ok"), role: .cancel) {
+                coordinator.infoMessage = nil
+            }
+        } message: {
+            Text(coordinator.infoMessage ?? "")
+        }
+        .overlay(alignment: .bottom) {
+            GlobalProgressHUD()
         }
     }
-}
 
-private struct FileOpenSheet: View {
-    let item: IncomingFile
-    @EnvironmentObject private var coordinator: AppCoordinator
-    var body: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: DS.Spacing.xl) {
-                Text(NSLocalizedString("file.open.title", comment: "")).font(.headline)
-                Text(item.fileName).font(.subheadline).foregroundStyle(.secondary)
-                Text(item.kindDescription).font(.body)
-                Button(NSLocalizedString("file.open.import", comment: "")) {
-                    coordinator.importIncomingFile(item)
-                }
-                .dsPrimaryButton()
-                .accessibilityIdentifier("fileOpen.import")
-                Spacer()
+    private var tabView: some View {
+        TabView(selection: $coordinator.selectedTab) {
+            NavigationStack(path: $coordinator.path) {
+                DashboardView(container: coordinator.container)
+                    .navigationDestination(for: AppRoute.self) { route in
+                        appRouteView(route)
+                    }
             }
-            .padding()
-            .navigationTitle(NSLocalizedString("file.open.title", comment: ""))
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(NSLocalizedString("common.cancel", comment: "")) { coordinator.pendingFileOpen = nil }
-                }
+            .tabItem { Label(Loc.string("tab.dashboard"), systemImage: "square.grid.2x2") }
+            .tag(AppTab.dashboard)
+            NavigationStack(path: $coordinator.path) {
+                ApplicationsView()
+                    .navigationDestination(for: AppRoute.self) { route in
+                        appRouteView(route)
+                    }
             }
+            .tabItem { Label(Loc.string("tab.applications"), systemImage: "app.badge") }
+            .tag(AppTab.applications)
+            NavigationStack(path: $coordinator.path) {
+                SourcesView()
+                    .navigationDestination(for: AppRoute.self) { route in
+                        appRouteView(route)
+                    }
+            }
+            .tabItem { Label(Loc.string("tab.sources"), systemImage: "globe") }
+            .tag(AppTab.sources)
+            NavigationStack(path: $coordinator.path) {
+                DownloadsView()
+                    .navigationDestination(for: AppRoute.self) { route in
+                        appRouteView(route)
+                    }
+            }
+            .tabItem { Label(Loc.string("tab.downloads"), systemImage: "arrow.down.circle") }
+            .tag(AppTab.downloads)
+            NavigationStack(path: $coordinator.path) {
+                FilesView()
+                    .navigationDestination(for: AppRoute.self) { route in
+                        appRouteView(route)
+                    }
+                    // Subfolder pushes register once, at the tab's
+                    // navigation root — not inside FilesView, where
+                    // every pushed copy would register the same type
+                    // again (Gemini review pass 4).
+                    .navigationDestination(for: URL.self) { url in
+                        FilesView(directory: url)
+                    }
+            }
+            .tabItem { Label(Loc.string("tab.files"), systemImage: "folder") }
+            .tag(AppTab.files)
+            NavigationStack(path: $coordinator.path) {
+                SettingsView()
+                    .navigationDestination(for: AppRoute.self) { route in
+                        appRouteView(route)
+                    }
+            }
+            .tabItem { Label(Loc.string("tab.settings"), systemImage: "gearshape") }
+            .tag(AppTab.settings)
+        }
+        .tint(DS.ColorPalette.accentBrand)
+    }
+
+    /// Shared push destinations for every tab's stack.
+    @ViewBuilder
+    private func appRouteView(_ route: AppRoute) -> some View {
+        switch route {
+        case .certificateDetail(let id):
+            if let certificate = coordinator.certificatesViewModel.certificates.first(where: { $0.id == id }) {
+                CertificateDetailView(certificate: certificate)
+            } else {
+                Text(Loc.string("certs.empty"))
+                    .foregroundStyle(.secondary)
+                    .navigationTitle(Loc.string("tab.certificates"))
+            }
+        case .profileDetail(let id):
+            if let profile = coordinator.certificatesViewModel.profiles.first(where: { $0.id == id }) {
+                CertificateDetailView(profile: profile)
+            } else {
+                Text(Loc.string("certs.empty"))
+                    .foregroundStyle(.secondary)
+                    .navigationTitle(Loc.string("tab.certificates"))
+            }
+        case .storage:
+            StorageView()
+        case .diagnostics:
+            DiagnosticsView()
+        case .about:
+            AboutView()
         }
     }
 }
