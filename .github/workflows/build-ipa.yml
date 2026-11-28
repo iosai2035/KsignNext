@@ -22,7 +22,7 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Select Xcode 17
         uses: maxim-lobanov/setup-xcode@v1
@@ -35,30 +35,7 @@ jobs:
           swift --version
           python3 --version
 
-      # Phase 1 Rust core (design doc §8.2): build the isideload-based
-      # Apple-refresh XCFramework BEFORE "Regenerate Xcode project",
-      # because the generator links RustCore/AppleRefresh.xcframework
-      # into the app target only when it exists on disk (and fails
-      # hard when REQUIRE_RUST_XCFRAMEWORK=1, set on the regenerate
-      # step below). The commands live in Scripts/build_rust_core.sh
-      # — the single source of truth; the workflow never inlines them,
-      # so the two can never drift apart again. Cache keyed on
-      # Cargo.lock (Swatinem/rust-cache); a clean build of this tree
-      # is several minutes (ring compiles C/assembly).
-      # NOTE: RustCore/apple_refresh/Cargo.lock must exist in the repo
-      # before the first run with this step — the build uses --locked
-      # and fails if the lock is missing or out of date.
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: RustCore/apple_refresh
-
-      - name: Build Rust Apple-refresh core (XCFramework)
-        run: bash Scripts/build_rust_core.sh
-
       - name: Regenerate Xcode project (verifies file list)
-        env:
-          REQUIRE_RUST_XCFRAMEWORK: "1"
         run: python3 Scripts/generate_project.py
 
       - name: Generate AppIcon PNGs (binary icons are not in the repo)
@@ -122,12 +99,18 @@ jobs:
             ONLY_ACTIVE_ARCH=YES 2>&1 | tee build/test.log
 
       - name: Run unit + integration + security tests
-        # xcodebuild on this runner hangs after the last test passes instead
-        # of exiting (run #85: 106/106 passed, no "TEST SUCCEEDED", killed
-        # by the cap). Run serially (-disable-concurrent-testing) and bound
-        # the wait to 12 minutes, then judge the result from the log itself.
-        # (xcodebuild writes "Test case" with a lowercase c — the judge
-        # must match that exact casing, or it counts zero and fails.)
+        # Strict test judge (B-J1): the old judge passed on partial
+        # execution — when xcodebuild was killed mid-suite no
+        # TEST SUCCEEDED / TEST FAILED ever printed, so it fell through
+        # to "count > 0, no failure string → exit 0" and reported green
+        # while suites never ran. Now xcodebuild runs in the foreground
+        # (one timeout mechanism: this step's timeout-minutes: 30 — the
+        # old manual 12-minute deadline + kill loop is gone, B-J2) and
+        # the judge parses the canonical "Executed N tests, with M
+        # failures" summary: it fails when no summary exists, when M
+        # != 0, or when N != the test-method count computed from
+        # source. A green run now proves every test executed and
+        # passed. (xcodebuild writes "Test case" with a lowercase c.)
         timeout-minutes: 30
         run: |
           python3 - <<'PY'
@@ -140,42 +123,37 @@ jobs:
           print("Simulator ready:", udid)
           PY
           set -o pipefail
+          # Count only the KsignNextTests bundle: UITests lives in its own
+          # target (KsignNextUITests) and is never run by
+          # -only-testing:KsignNextTests, so exclude it or the judge
+          # would demand tests that can never execute.
+          EXPECTED=$(grep -rh "func test" Tests/ --exclude-dir=UITests | wc -l | tr -d ' ')
+          echo "Expected test methods (from source, KsignNextTests bundle): $EXPECTED"
           xcodebuild test-without-building \
             -project KsignNext.xcodeproj \
             -scheme KsignNext \
             -destination 'platform=iOS Simulator,id=${{ env.SIM_UDID }}' \
             -disable-concurrent-testing \
             -only-testing:KsignNextTests \
-            ONLY_ACTIVE_ARCH=YES > build/test.log 2>&1 &
-          XCODE_PID=$!
-          DEADLINE=$((SECONDS + 720))
-          while kill -0 "$XCODE_PID" 2>/dev/null && [ "$SECONDS" -lt "$DEADLINE" ]; do
-            sleep 10
-          done
-          if kill -0 "$XCODE_PID" 2>/dev/null; then
-            echo "xcodebuild still running after 12 minutes; stopping it and judging from the log."
-            kill "$XCODE_PID" 2>/dev/null || true
-            sleep 5
-            kill -9 "$XCODE_PID" 2>/dev/null || true
-          fi
-          wait "$XCODE_PID" 2>/dev/null || true
-          cat build/test.log
-          if grep -q "TEST SUCCEEDED" build/test.log; then
-            echo "Tests passed (xcodebuild reported success)."
-            exit 0
-          fi
-          if [ "$(grep -c "Test case" build/test.log)" -eq 0 ]; then
-            echo "No test cases ran."
-            exit 1
-          fi
-          if grep -q "TEST FAILED" build/test.log || grep -q " failed on " build/test.log; then
-            echo "Failing tests found in the log."
-            exit 1
-          fi
-          echo "Test log shows $(grep -c "Test case" build/test.log) test cases, 0 failed; xcodebuild hung at teardown (known runner issue)."
-          exit 0
-
-
+            ONLY_ACTIVE_ARCH=YES 2>&1 | tee build/test.log || true
+          EXPECTED="$EXPECTED" python3 - <<'PY'
+          import os, re, sys
+          expected = int(os.environ["EXPECTED"])
+          text = open("build/test.log", errors="replace").read()
+          found = re.findall(r"Executed (\d+) tests, with (\d+) failures", text)
+          if not found:
+              print("No test summary found in build/test.log — test execution did not complete.")
+              sys.exit(1)
+          total, failures = map(int, found[-1])
+          print(f"Test summary (last): executed {total}, failures {failures}; expected {expected} tests.")
+          if failures != 0:
+              print(f"FAIL: {failures} test failure(s).")
+              sys.exit(1)
+          if total != expected:
+              print(f"FAIL: only {total} of {expected} tests executed — partial execution.")
+              sys.exit(1)
+          print("All tests executed and passed.")
+          PY
 
       - name: Archive (Release, unsigned for SideStore)
         run: |
@@ -208,7 +186,7 @@ jobs:
 
       - name: Upload IPA artifact
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: KsignNext-ipa
           path: |
@@ -218,7 +196,7 @@ jobs:
 
       - name: Upload build logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: build-logs
           path: build/*.log
