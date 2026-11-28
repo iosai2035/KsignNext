@@ -136,7 +136,7 @@ public final class NIOInstallationServer: InstallationServerProtocol, @unchecked
         lock.unlock()
         guard timeout > 0 else { return }
         let task = group.next().scheduleTask(in: .seconds(Int64(timeout))) { [weak self] in
-            Task { await self?.stop() }
+            _ = Task { await self?.stop() }
         }
         lock.lock()
         timeoutTask = task

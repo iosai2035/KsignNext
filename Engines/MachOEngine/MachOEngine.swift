@@ -62,7 +62,7 @@ public enum MachOEngine {
     public static func codeSignatureFreeSpace(data: Data) throws -> Int? {
         let slice = try arm64Slice(of: data)
         guard let textOffset = try textSectionOffset(in: slice) else { return nil }
-        let used = slice.headerSize + Int(slice.sizeofcmds)
+        let used = slice.headerSize + Int(try slice.sizeofcmds)
         guard textOffset >= used else { return 0 }
         return textOffset - used
     }
