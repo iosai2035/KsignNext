@@ -94,13 +94,6 @@ public struct SigningConfiguration: Codable, Equatable, Identifiable {
         self.injectFolder = injectFolder
     }
 
-    /// A configuration is usable when it names a certificate (or ad-hoc)
-    /// and a valid bundle identifier.
-    public var isUsable: Bool {
-        (doAdhocSigning || certificateID != nil)
-            && Validators.isValidBundleIdentifier(bundleIdentifier)
-    }
-
     public static func `default`(bundleIdentifier: String) -> SigningConfiguration {
         SigningConfiguration(bundleIdentifier: bundleIdentifier)
     }
