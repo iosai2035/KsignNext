@@ -387,6 +387,7 @@
 "sources.status.invalid" = "Invalid";
 "sources.status.updating" = "Updating";
 "sources.apps.count" = "%d apps";
+"sources.app.version.unknown" = "Version unknown";
 "install.empty" = "No signed apps yet";
 "install.empty.detail" = "Sign an app first, then come back here to install it on this device or another one.";
 "install.refresh.udid.hint" = "Signed in, but re-signing needs your device UDID — paste it in the Device UDID section below.";

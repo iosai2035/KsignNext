@@ -387,6 +387,7 @@
 "sources.status.invalid" = "غير صالح";
 "sources.status.updating" = "جارٍ التحديث";
 "sources.apps.count" = "%d تطبيقات";
+"sources.app.version.unknown" = "إصدار غير معروف";
 "install.empty" = "لا توجد تطبيقات موقّعة بعد";
 "install.empty.detail" = "وقّع تطبيقًا أولًا، ثم عُد إلى هنا لتثبيته على هذا الجهاز أو جهاز آخر.";
 "install.refresh.udid.hint" = "تم تسجيل الدخول، لكن إعادة التوقيع تحتاج إلى UDID جهازك — الصقه في قسم UDID الجهاز أدناه.";

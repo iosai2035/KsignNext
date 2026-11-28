@@ -251,6 +251,7 @@ final class CertificatesViewModel: ObservableObject {
 
 struct CertificatesView: View {
     @StateObject private var viewModel: CertificatesViewModel
+    @EnvironmentObject private var coordinator: AppCoordinator
     @State private var certToDelete: StoredCertificate?
     @State private var certToRevoke: DevelopmentCertificate?
     @State private var selectedCert: StoredCertificate?
@@ -309,10 +310,35 @@ struct CertificatesView: View {
                 case .failure(let error): viewModel.errorMessage = error.localizedDescription
                 }
             }
-            .sheet(isPresented: $showPasswordSheet) { passwordSheet }
+            .sheet(isPresented: $showPasswordSheet, onDismiss: {
+                // W-1: the Open-In .p12 trigger is consumed when its
+                // password sheet closes (either path clears the sheet
+                // state first); a nil here is a no-op for manual imports.
+                coordinator.pendingP12ImportURL = nil
+            }) { passwordSheet }
             .onAppear {
                 viewModel.refresh()
                 Task { await viewModel.loadDevCertificates() }
+            }
+            .task(id: coordinator.certificatesChangedToken) {
+                // W-1: the coordinator drops files into Certificates/
+                // (Open-In .p12/.mobileprovision) — refresh even when
+                // already on this tab, where onAppear does not re-fire.
+                viewModel.refresh()
+            }
+            .task(id: coordinator.pendingP12ImportURL) {
+                // W-1: an Open-In .p12 arrives via the coordinator —
+                // bridge its Inbox copy into the view model and open
+                // the password sheet. Guarded so an already-open sheet
+                // is never stomped; if the presentation is dropped
+                // while the file-open sheet dismisses, the task runs
+                // again when the tab re-appears and retries.
+                guard coordinator.pendingFileOpen == nil,
+                      let url = coordinator.pendingP12ImportURL,
+                      viewModel.pendingP12URL == nil,
+                      !showPasswordSheet else { return }
+                viewModel.pendingP12URL = url
+                showPasswordSheet = true
             }
             .alert(NSLocalizedString("common.delete.confirm", comment: ""), isPresented: Binding(get: { certToDelete != nil }, set: { if !$0 { certToDelete = nil } })) {
                 Button(NSLocalizedString("common.delete", comment: ""), role: .destructive) {
